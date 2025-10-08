@@ -110,6 +110,7 @@ Create a `super-mcp-config.json` file:
 - `name`: Human-readable name for the package
 - `description`: Description of the package's capabilities
 - `visibility`: "default" or "hidden" (controls display in tool lists)
+- `timeout`: Tool execution timeout in milliseconds (default: 300000 = 5 minutes)
 
 ### Environment Variable Expansion
 
@@ -133,6 +134,38 @@ This allows you to:
 - Use different values across environments
 
 **Security Note**: Only explicitly configured environment variables are passed to MCP servers. This prevents leaking system environment variables to individual servers.
+
+### Configuring Tool Timeouts
+
+Super MCP Router supports configurable timeouts for long-running tool executions. By default, tools timeout after 5 minutes (300,000ms), but you can customize this per-server or globally.
+
+**Per-Server Timeout:**
+```json
+{
+  "mcpServers": {
+    "deep-research": {
+      "command": "npx",
+      "args": ["-y", "octagon-deep-research-mcp@latest"],
+      "timeout": 600000,  // 10 minutes for deep research tasks
+      "env": {
+        "OCTAGON_API_KEY": "your_api_key"
+      }
+    }
+  }
+}
+```
+
+**Global Timeout (Environment Variable):**
+```bash
+export SUPER_MCP_TOOL_TIMEOUT=600000  # 10 minutes default for all tools
+```
+
+**How Timeouts Work:**
+- Default timeout: 300,000ms (5 minutes)
+- Per-server `timeout` config overrides the default
+- `SUPER_MCP_TOOL_TIMEOUT` environment variable provides a global default
+- Timeout automatically resets when the tool sends progress notifications
+- Useful for long-running operations like research, data processing, or complex queries
 
 ## CLI Commands
 

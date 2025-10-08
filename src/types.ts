@@ -15,6 +15,9 @@ export interface StandardServerConfig {
   type?: "stdio" | "sse" | "http";
   url?: string;
   headers?: Record<string, string>;
+  // Tool execution timeout in milliseconds (default: 300000ms = 5 minutes)
+  // Can be overridden by SUPER_MCP_TOOL_TIMEOUT environment variable
+  timeout?: number;
 }
 
 // Extended super-mcp config format (backward compatibility)
@@ -47,6 +50,7 @@ export interface PackageConfig {
   extra_headers?: Record<string, string>;
   visibility: "default" | "hidden";
   oauth?: boolean; // Enable OAuth for this server
+  timeout?: number; // Tool execution timeout in milliseconds
 }
 
 export interface AuthConfig {

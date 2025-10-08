@@ -40,6 +40,16 @@
       },
       "name": "Custom API Server",
       "description": "Custom HTTP MCP server with authentication"
+    },
+    "deep-research": {
+      "command": "npx",
+      "args": ["-y", "octagon-deep-research-mcp@latest"],
+      "timeout": 600000,
+      "env": {
+        "OCTAGON_API_KEY": "YOUR_OCTAGON_API_KEY"
+      },
+      "name": "Deep Research",
+      "description": "Long-running research tool with 10-minute timeout"
     }
   }
 }

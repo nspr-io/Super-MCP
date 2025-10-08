@@ -391,10 +391,23 @@ export class HttpMcpClient implements McpClient {
       throw new Error(`Package '${this.packageId}' is not connected`);
     }
 
+    // Get timeout from config or environment variable (default: 5 minutes)
+    const timeout = this.config.timeout ||
+                    parseInt(process.env.SUPER_MCP_TOOL_TIMEOUT || '300000');
+
+    logger.debug("Calling tool on HTTP MCP", {
+      package_id: this.packageId,
+      tool_name: name,
+      timeout_ms: timeout,
+    });
+
     try {
       const response = await this.client.callTool({
         name,
         arguments: args || {},
+      }, undefined, {
+        timeout,
+        resetTimeoutOnProgress: true, // Reset timeout when progress notifications are received
       });
       return response;
     } catch (error) {

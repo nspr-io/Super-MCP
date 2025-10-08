@@ -5,6 +5,23 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2025-10-08
+
+### Added
+- **Configurable tool timeouts**: Support for per-server timeout configuration via `timeout` field
+- **Global timeout environment variable**: `SUPER_MCP_TOOL_TIMEOUT` for setting default timeout across all servers
+- **Progress-based timeout reset**: Timeouts automatically reset when MCP servers send progress notifications
+- **Increased default timeout**: Changed from 60 seconds to 5 minutes (300,000ms) for better support of long-running operations
+
+### Changed
+- Default tool execution timeout increased from 60 seconds to 5 minutes
+- Tool timeouts now properly passed through to MCP SDK for both stdio and HTTP transports
+- Timeout configuration now supports three levels: per-server config > global env var > default (300s)
+
+### Fixed
+- Fixed issue where MCP tool calls were timing out at hardcoded 60 seconds regardless of configuration
+- Long-running tools (research, data processing, complex queries) can now complete successfully
+
 ## [1.3.0] - 2025-01-11
 
 ### Added

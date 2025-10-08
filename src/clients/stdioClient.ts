@@ -137,16 +137,24 @@ export class StdioMcpClient implements McpClient {
   }
 
   async callTool(name: string, args: any): Promise<any> {
+    // Get timeout from config or environment variable (default: 5 minutes)
+    const timeout = this.config.timeout ||
+                    parseInt(process.env.SUPER_MCP_TOOL_TIMEOUT || '300000');
+
     logger.debug("Calling tool on stdio MCP", {
       package_id: this.packageId,
       tool_name: name,
       args_keys: typeof args === "object" && args ? Object.keys(args) : [],
+      timeout_ms: timeout,
     });
 
     try {
       const response = await this.client.callTool({
         name,
         arguments: args || {},
+      }, undefined, {
+        timeout,
+        resetTimeoutOnProgress: true, // Reset timeout when progress notifications are received
       });
 
       logger.debug("Tool call completed", {
