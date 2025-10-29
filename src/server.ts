@@ -1,6 +1,6 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema, McpError, ErrorCode as SdkErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import {
   ERROR_CODES,
   ListToolPackagesInput,
@@ -471,54 +471,53 @@ async function handleUseTool(
     };
   }
 
-  // Validate arguments
-  try {
-    validator.validate(schema, args, { package_id, tool_id });
-  } catch (error) {
-    if (error instanceof ValidationError) {
-      // Build a helpful error message
-      let helpMessage = `Argument validation failed for tool '${tool_id}' in package '${package_id}'.\n`;
-      helpMessage += `\n${error.message}\n`;
-      
-      // Add specific guidance based on validation errors
-      if (error.errors && error.errors.length > 0) {
-        helpMessage += `\nValidation errors:`;
-        error.errors.forEach((err: any) => {
-          const path = err.instancePath || "root";
-          helpMessage += `\n  • ${path}: ${err.message}`;
-          
-          // Add specific suggestions
-          if (err.keyword === "required") {
-            helpMessage += ` (missing: ${err.params?.missingProperty})`;
-          } else if (err.keyword === "type") {
-            helpMessage += ` (expected: ${err.params?.type}, got: ${typeof err.data})`;
-          } else if (err.keyword === "enum") {
-            helpMessage += ` (allowed values: ${err.params?.allowedValues?.join(", ")})`;
-          }
-        });
-      }
-      
-      helpMessage += `\n\nTo see the correct schema, run:`;
-      helpMessage += `\n  list_tools(package_id: "${package_id}", include_schemas: true)`;
-      helpMessage += `\n\nTo test your arguments without executing:`;
-      helpMessage += `\n  use_tool(package_id: "${package_id}", tool_id: "${tool_id}", args: {...}, dry_run: true)`;
-      
-      throw {
-        code: ERROR_CODES.ARG_VALIDATION_FAILED,
-        message: helpMessage,
-        data: {
-          package_id,
-          tool_id,
-          errors: error.errors,
-          provided_args: args ? Object.keys(args) : [],
-        },
-      };
-    }
-    throw error;
-  }
-
   // Handle dry run
   if (dry_run) {
+    try {
+      validator.validate(schema, args, { package_id, tool_id });
+    } catch (error) {
+      if (error instanceof ValidationError) {
+        // Build a helpful error message
+        let helpMessage = `Argument validation failed for tool '${tool_id}' in package '${package_id}'.\n`;
+        helpMessage += `\n${error.message}\n`;
+        
+        // Add specific guidance based on validation errors
+        if (error.errors && error.errors.length > 0) {
+          helpMessage += `\nValidation errors:`;
+          error.errors.forEach((err: any) => {
+            const path = err.instancePath || "root";
+            helpMessage += `\n  • ${path}: ${err.message}`;
+            
+            // Add specific suggestions
+            if (err.keyword === "required") {
+              helpMessage += ` (missing: ${err.params?.missingProperty})`;
+            } else if (err.keyword === "type") {
+              helpMessage += ` (expected: ${err.params?.type}, got: ${typeof err.data})`;
+            } else if (err.keyword === "enum") {
+              helpMessage += ` (allowed values: ${err.params?.allowedValues?.join(", ")})`;
+            }
+          });
+        }
+        
+        helpMessage += `\n\nTo see the correct schema, run:`;
+        helpMessage += `\n  list_tools(package_id: "${package_id}", include_schemas: true)`;
+        helpMessage += `\n\nTo test your arguments without executing:`;
+        helpMessage += `\n  use_tool(package_id: "${package_id}", tool_id: "${tool_id}", args: {...}, dry_run: true)`;
+        
+        throw {
+          code: ERROR_CODES.ARG_VALIDATION_FAILED,
+          message: helpMessage,
+          data: {
+            package_id,
+            tool_id,
+            errors: error.errors,
+            provided_args: args ? Object.keys(args) : [],
+          },
+        };
+      }
+      throw error;
+    }
+
     const result: UseToolOutput = {
       package_id,
       tool_id,
@@ -565,6 +564,21 @@ async function handleUseTool(
   } catch (error) {
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
+
+    if (error instanceof McpError && error.code === SdkErrorCode.InvalidParams) {
+      throw {
+        code: ERROR_CODES.ARG_VALIDATION_FAILED,
+        message: error.message,
+        data: {
+          package_id,
+          tool_id,
+          duration_ms: duration,
+          args_provided: args ? Object.keys(args) : [],
+          mcp_error_code: error.code,
+          mcp_error_data: error.data,
+        },
+      };
+    }
     
     // Build helpful diagnostic message
     let diagnosticMessage = `Tool execution failed in package '${package_id}', tool '${tool_id}'.\n`;
