@@ -15,7 +15,11 @@ Super MCP Router allows you to configure multiple MCP servers (both local stdio 
 
 ## Quick Start (No Installation Required!)
 
-### 1. Add to Claude Desktop
+Super MCP Router supports two transport modes:
+- **STDIO** (default): For local Claude Desktop integration
+- **HTTP**: For remote access and running multiple instances in parallel
+
+### 1. Add to Claude Desktop (STDIO Mode)
 
 Add this to your Claude Desktop MCP settings:
 
@@ -32,6 +36,55 @@ Add this to your Claude Desktop MCP settings:
   }
 }
 ```
+
+### 1b. Use HTTP Mode (Remote/Parallel Access)
+
+**When to use HTTP mode:**
+- 🔄 Running multiple instances in parallel (no tool call conflicts)
+- 🌐 Remote access from multiple machines
+- ☁️ Cloud deployments (AWS, GCP, Azure, etc.)
+- 🔧 Load balancing across multiple servers
+- 📊 Easier monitoring and debugging with HTTP tools
+
+To run the server in HTTP mode:
+
+```bash
+# Run on default port 3000
+npx super-mcp-router@latest --transport http
+
+# Run on custom port
+npx super-mcp-router@latest --transport http --port 8080
+
+# With custom config
+npx super-mcp-router@latest --transport http --config /path/to/config.json
+```
+
+Then configure Claude Desktop to connect via HTTP:
+
+```json
+{
+  "mcpServers": {
+    "super-mcp-http": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}
+```
+
+**Running Multiple Instances:**
+```bash
+# Terminal 1 - Instance on port 3000
+npx super-mcp-router@latest --transport http --port 3000
+
+# Terminal 2 - Instance on port 3001
+npx super-mcp-router@latest --transport http --port 3001
+
+# Terminal 3 - Instance on port 3002
+npx super-mcp-router@latest --transport http --port 3002
+```
+
+Each instance runs independently with no shared state or conflicts.
 
 ### 2. Restart Claude Desktop
 
@@ -55,6 +108,24 @@ npx super-mcp-router add --help
 ```
 
 Or manually edit `~/.super-mcp/config.json` to add custom MCPs.
+
+## Transport Modes
+
+### STDIO Mode (Default)
+- ✅ Best for: Local Claude Desktop integration
+- ✅ Zero configuration needed
+- ✅ Lowest latency
+- ⚠️ Single client only
+- ⚠️ Cannot run multiple instances in parallel
+
+### HTTP Mode
+- ✅ Best for: Multiple parallel instances, remote access, cloud deployments
+- ✅ Run unlimited instances simultaneously
+- ✅ No tool call conflicts between instances
+- ✅ Works with load balancers
+- ✅ Easier to monitor and debug
+- ⚠️ Requires port configuration
+- ⚠️ Slightly higher latency than stdio (minimal)
 
 ## Configuration
 

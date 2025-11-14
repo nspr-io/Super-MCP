@@ -67,6 +67,10 @@ const getArg = (name: string, d?: string) => {
   return i >= 0 ? args[i + 1] : d;
 };
 
+const hasFlag = (name: string) => {
+  return args.includes(`--${name}`);
+};
+
 // Simple CLI for adding MCPs
 async function handleAddCommand() {
   const serverType = args[1];
@@ -147,11 +151,14 @@ async function main() {
   
   const configPaths = await getConfigPaths();
   const logLevel = getArg("log-level", "info");
+  const transportArg = getArg("transport", "stdio");
+  const transport = (transportArg === "http" ? "http" : "stdio") as "stdio" | "http";
+  const port = parseInt(getArg("port", "3000")!, 10);
 
   // Initialize logger
   initLogger(logLevel as any);
 
-  startServer({ configPaths, logLevel }).catch(err => {
+  startServer({ configPaths, logLevel, transport, port }).catch(err => {
     console.error(JSON.stringify({ level: "fatal", msg: String(err) }));
     process.exit(1);
   });

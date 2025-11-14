@@ -1,6 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, McpError, ErrorCode as SdkErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import express from "express";
 import {
   ERROR_CODES,
   ListToolPackagesInput,
@@ -25,8 +27,10 @@ export async function startServer(options: {
   configPath?: string;
   configPaths?: string[];
   logLevel?: string;
+  transport?: "stdio" | "http";
+  port?: number;
 }): Promise<void> {
-  const { configPath, configPaths, logLevel = "info" } = options;
+  const { configPath, configPaths, logLevel = "info", transport = "stdio", port = 3000 } = options;
   
   // Handle both single and multiple config paths for backwards compatibility
   const paths = configPaths || (configPath ? [configPath] : ["super-mcp-config.json"]);
@@ -37,6 +41,8 @@ export async function startServer(options: {
   logger.info("Starting Super MCP Router", {
     config_paths: paths,
     log_level: logLevel,
+    transport_mode: transport,
+    ...(transport === "http" && { port }),
   });
 
   try {
@@ -323,24 +329,83 @@ export async function startServer(options: {
       }
     });
 
-    // Create transport and connect
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+    // Create transport and connect based on mode
+    if (transport === "http") {
+      // HTTP mode: Create Express server with StreamableHTTP transport (stateless)
+      const app = express();
+      app.use(express.json());
 
-    logger.info("Super MCP Router started successfully");
+      // Create stateless transport (no session management for parallel instances)
+      const httpTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined, // Stateless mode
+      });
 
-    // Graceful shutdown
-    process.on("SIGINT", async () => {
-      logger.info("Shutting down...");
-      await registry.closeAll();
-      process.exit(0);
-    });
+      // Connect server to transport once
+      await server.connect(httpTransport);
 
-    process.on("SIGTERM", async () => {
-      logger.info("Shutting down...");
-      await registry.closeAll();
-      process.exit(0);
-    });
+      // Health check endpoint
+      app.get("/health", (_req, res) => {
+        res.json({ status: "ok", transport: "http" });
+      });
+
+      // Main MCP endpoint - handles all MCP communication (POST for messages, GET for SSE)
+      const mcpHandler = async (req: any, res: any) => {
+        try {
+          await httpTransport.handleRequest(req, res, req.body);
+        } catch (error) {
+          logger.error("Failed to handle MCP request", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (!res.headersSent) {
+            res.status(500).json({ error: "Internal server error" });
+          }
+        }
+      };
+
+      app.post("/mcp", mcpHandler);
+      app.get("/mcp", mcpHandler); // For SSE streams
+
+      const httpServer = app.listen(port, () => {
+        logger.info("Super MCP Router started successfully", {
+          transport: "http",
+          port,
+          endpoint: `http://localhost:${port}/mcp`,
+        });
+      });
+
+      // Graceful shutdown for HTTP mode
+      const shutdown = async () => {
+        logger.info("Shutting down HTTP server...");
+        httpServer.close(() => {
+          logger.info("HTTP server closed");
+        });
+        await httpTransport.close();
+        logger.info("HTTP transport closed");
+        await registry.closeAll();
+        process.exit(0);
+      };
+
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+    } else {
+      // STDIO mode (default): Use standard input/output transport
+      const stdioTransport = new StdioServerTransport();
+      await server.connect(stdioTransport);
+
+      logger.info("Super MCP Router started successfully", {
+        transport: "stdio",
+      });
+
+      // Graceful shutdown for STDIO mode
+      const shutdown = async () => {
+        logger.info("Shutting down...");
+        await registry.closeAll();
+        process.exit(0);
+      };
+
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+    }
     
   } catch (error) {
     logger.fatal("Failed to start server", {
@@ -449,7 +514,35 @@ async function handleUseTool(
   catalog: Catalog,
   validator: any
 ): Promise<any> {
-  const { package_id, tool_id, args, dry_run = false } = input;
+  let { package_id, tool_id, args, dry_run = false } = input;
+
+  // Handle namespaced tool IDs for backward compatibility and Claude Code subagent support
+  // Tool IDs now follow the format: "PackageName__tool_name"
+  // This ensures global uniqueness when multiple packages have identically named tools
+
+  // Case 1: tool_id is namespaced but package_id not provided (e.g., "filesystem__read_file")
+  if (tool_id.includes('__') && !package_id) {
+    const parts = tool_id.split('__');
+    if (parts.length >= 2) {
+      package_id = parts[0];
+      tool_id = parts.slice(1).join('__'); // Preserve __ in original tool name if present
+      logger.debug("Extracted package from namespaced tool_id", {
+        original_tool_id: input.tool_id,
+        extracted_package_id: package_id,
+        extracted_tool_id: tool_id,
+      });
+    }
+  }
+  // Case 2: Both package_id provided AND tool_id is namespaced (strip namespace prefix)
+  else if (package_id && tool_id.startsWith(`${package_id}__`)) {
+    const originalToolId = tool_id;
+    tool_id = tool_id.substring(package_id.length + 2); // Remove "PackageId__" prefix
+    logger.debug("Stripped namespace prefix from tool_id", {
+      original_tool_id: originalToolId,
+      stripped_tool_id: tool_id,
+      package_id,
+    });
+  }
 
   // Validate that the package exists
   const packageConfig = registry.getPackage(package_id);
@@ -461,7 +554,7 @@ async function handleUseTool(
     };
   }
 
-  // Get and validate the tool schema
+  // Get and validate the tool schema (using the original, un-namespaced tool name)
   const schema = await catalog.getToolSchema(package_id, tool_id);
   if (!schema) {
     throw {

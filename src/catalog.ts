@@ -206,15 +206,21 @@ export class Catalog {
   ): Promise<ToolInfo[]> {
     const tools = await this.getPackageTools(packageId);
 
-    return tools.map(cachedTool => ({
-      package_id: packageId,
-      tool_id: cachedTool.tool.name,
-      name: cachedTool.tool.name,
-      summary: options.summarize ? cachedTool.summary : undefined,
-      args_skeleton: options.summarize ? cachedTool.argsSkeleton : undefined,
-      schema_hash: cachedTool.schemaHash,
-      schema: options.include_schemas ? cachedTool.tool.inputSchema : undefined,
-    }));
+    return tools.map(cachedTool => {
+      // Add namespace prefix to ensure global uniqueness across all packages
+      // This prevents tool name collisions when multiple packages have identically named tools
+      const namespacedId = `${packageId}__${cachedTool.tool.name}`;
+
+      return {
+        package_id: packageId,
+        tool_id: namespacedId,
+        name: namespacedId,
+        summary: options.summarize ? cachedTool.summary : undefined,
+        args_skeleton: options.summarize ? cachedTool.argsSkeleton : undefined,
+        schema_hash: cachedTool.schemaHash,
+        schema: options.include_schemas ? cachedTool.tool.inputSchema : undefined,
+      };
+    });
   }
 
   clear(): void {
