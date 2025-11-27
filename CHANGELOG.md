@@ -5,6 +5,20 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2025-11-27
+
+### Added
+- **Output truncation support**: New `max_output_chars` parameter on `use_tool` to prevent context overflow
+  - When specified, tool outputs exceeding the limit are truncated with a clear indicator
+  - Truncation metadata included in telemetry (`output_truncated`, `original_output_chars`)
+- **Large output warnings**: Automatic warning hints when tool outputs exceed 150k characters (~37.5k tokens)
+  - Warning suggests using `max_output_chars` parameter to prevent context overflow
+  - Enables AI agents to self-recover by retrying with output limits
+- **Output size telemetry**: All tool results now include `output_chars` in telemetry for monitoring
+
+### Changed
+- `UseToolOutput` telemetry now includes optional fields: `output_chars`, `output_truncated`, `original_output_chars`
+
 ## [1.4.0] - 2025-10-08
 
 ### Added

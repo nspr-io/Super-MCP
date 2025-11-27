@@ -167,6 +167,10 @@ export async function startServer(options: {
                   description: "Validate arguments without executing (useful for testing)",
                   default: false,
                 },
+                max_output_chars: {
+                  type: "number",
+                  description: "Maximum characters to return in the output. If the tool output exceeds this limit, it will be truncated. Use this to prevent context overflow when working with tools that may return large amounts of data.",
+                },
               },
               required: ["package_id", "tool_id", "args"],
               examples: [
@@ -180,6 +184,12 @@ export async function startServer(options: {
                   tool_id: "search_repositories",
                   args: { query: "mcp tools", limit: 5 },
                   dry_run: true
+                },
+                {
+                  package_id: "filesystem",
+                  tool_id: "read_file",
+                  args: { path: "/tmp/large_file.log" },
+                  max_output_chars: 50000
                 }
               ],
             },
@@ -426,9 +436,12 @@ async function handleListToolPackages(
   
   const packageInfos = await Promise.all(
     packages.map(async (pkg) => {
+      await catalog.ensurePackageLoaded(pkg.id);
       const toolCount = catalog.countTools(pkg.id);
       const health = include_health ? await registry.healthCheck(pkg.id) : undefined;
       const summary = await catalog.buildPackageSummary(pkg);
+      const catalogStatus = catalog.getPackageStatus(pkg.id);
+      const catalogError = catalog.getPackageError(pkg.id);
 
       const authMode: "env" | "oauth2" | "none" = pkg.transport === "http" 
         ? (pkg.auth?.mode ?? "none") 
@@ -444,6 +457,8 @@ async function handleListToolPackages(
         health,
         summary: pkg.description || summary,
         visibility: pkg.visibility,
+        catalog_status: catalogStatus !== "unknown" ? catalogStatus : undefined,
+        catalog_error: catalogError,
       };
     })
   );
@@ -478,6 +493,24 @@ async function handleListTools(
     page_token,
   } = input;
 
+  await catalog.ensurePackageLoaded(package_id);
+  const packageStatus = catalog.getPackageStatus(package_id);
+  if (packageStatus === "auth_required") {
+    throw {
+      code: ERROR_CODES.PACKAGE_UNAVAILABLE,
+      message: `Package '${package_id}' requires authentication. Run 'authenticate(package_id: "${package_id}")'.`,
+      data: { package_id, status: packageStatus },
+    };
+  }
+  if (packageStatus === "error") {
+    const reason = catalog.getPackageError(package_id) || "See logs for details";
+    throw {
+      code: ERROR_CODES.PACKAGE_UNAVAILABLE,
+      message: `Package '${package_id}' is unavailable: ${reason}`,
+      data: { package_id, status: packageStatus },
+    };
+  }
+
   const toolInfos = await catalog.buildToolInfos(package_id, {
     summarize,
     include_schemas,
@@ -508,13 +541,16 @@ async function handleListTools(
   };
 }
 
+// Threshold for warning about large outputs (150k chars ≈ 37.5k tokens)
+const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
+
 async function handleUseTool(
   input: UseToolInput,
   registry: PackageRegistry,
   catalog: Catalog,
   validator: any
 ): Promise<any> {
-  let { package_id, tool_id, args, dry_run = false } = input;
+  let { package_id, tool_id, args, dry_run = false, max_output_chars } = input;
 
   // Handle namespaced tool IDs for backward compatibility and Claude Code subagent support
   // Tool IDs now follow the format: "PackageName__tool_name"
@@ -551,6 +587,24 @@ async function handleUseTool(
       code: ERROR_CODES.PACKAGE_NOT_FOUND,
       message: `Package not found: ${package_id}`,
       data: { package_id },
+    };
+  }
+
+  await catalog.ensurePackageLoaded(package_id);
+  const packageStatus = catalog.getPackageStatus(package_id);
+  if (packageStatus === "auth_required") {
+    throw {
+      code: ERROR_CODES.PACKAGE_UNAVAILABLE,
+      message: `Package '${package_id}' requires authentication. Run 'authenticate(package_id: "${package_id}")'.`,
+      data: { package_id, status: packageStatus },
+    };
+  }
+  if (packageStatus === "error") {
+    const reason = catalog.getPackageError(package_id) || "See logs for details";
+    throw {
+      code: ERROR_CODES.PACKAGE_UNAVAILABLE,
+      message: `Package '${package_id}' is unavailable: ${reason}`,
+      data: { package_id, status: packageStatus },
     };
   }
 
@@ -645,11 +699,58 @@ async function handleUseTool(
       telemetry: { duration_ms: duration, status: "ok" },
     };
 
+    // Convert result to JSON string for size checking
+    let outputJson = JSON.stringify(result, null, 2);
+    const originalOutputChars = outputJson.length;
+    const estimatedTokens = Math.ceil(originalOutputChars / 4);
+    let wasTruncated = false;
+
+    // If max_output_chars is specified and output exceeds it, truncate
+    if (max_output_chars && originalOutputChars > max_output_chars) {
+      wasTruncated = true;
+      const truncatedJson = outputJson.slice(0, max_output_chars);
+      
+      // Update telemetry with truncation info
+      result.telemetry.output_truncated = true;
+      result.telemetry.original_output_chars = originalOutputChars;
+      result.telemetry.output_chars = max_output_chars;
+      
+      outputJson = truncatedJson + `\n\n[OUTPUT TRUNCATED: Showing ${max_output_chars.toLocaleString()} of ${originalOutputChars.toLocaleString()} characters (~${estimatedTokens.toLocaleString()} tokens). To get the complete output, retry without max_output_chars or with a higher limit.]`;
+      
+      logger.warn("Tool output truncated", {
+        package_id,
+        tool_id,
+        original_chars: originalOutputChars,
+        truncated_to: max_output_chars,
+        estimated_tokens: estimatedTokens,
+      });
+    }
+    // If no truncation requested but output is very large, add a warning hint
+    else if (!max_output_chars && originalOutputChars > LARGE_OUTPUT_WARNING_THRESHOLD) {
+      result.telemetry.output_chars = originalOutputChars;
+      
+      // Re-stringify with updated telemetry
+      outputJson = JSON.stringify(result, null, 2);
+      outputJson += `\n\n---\n⚠️ LARGE OUTPUT WARNING: This response contains ${originalOutputChars.toLocaleString()} characters (~${estimatedTokens.toLocaleString()} tokens).\nIf this causes context overflow errors, you can retry with the max_output_chars parameter to limit the output size.\nExample: use_tool({ package_id: "${package_id}", tool_id: "${tool_id}", args: {...}, max_output_chars: 50000 })`;
+      
+      logger.info("Large tool output detected", {
+        package_id,
+        tool_id,
+        output_chars: originalOutputChars,
+        estimated_tokens: estimatedTokens,
+        warning_threshold: LARGE_OUTPUT_WARNING_THRESHOLD,
+      });
+    } else {
+      result.telemetry.output_chars = originalOutputChars;
+      // Re-stringify with updated telemetry
+      outputJson = JSON.stringify(result, null, 2);
+    }
+
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify(result, null, 2),
+          text: outputJson,
         },
       ],
       isError: false,

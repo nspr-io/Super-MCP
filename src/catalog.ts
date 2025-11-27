@@ -4,6 +4,8 @@ import { summarizeTool, argsSkeleton, summarizePackage, createSchemaHash } from 
 import { getLogger } from "./logging.js";
 
 const logger = getLogger();
+const ERROR_RETRY_INTERVAL_MS = 60_000;
+type CatalogStatus = "ready" | "auth_required" | "error";
 
 interface CachedTool {
   packageId: string;
@@ -18,6 +20,8 @@ interface PackageToolCache {
   tools: CachedTool[];
   lastUpdated: number;
   etag: string;
+  status: CatalogStatus;
+  lastError?: string;
 }
 
 export class Catalog {
@@ -58,6 +62,8 @@ export class Catalog {
         tools: cachedTools,
         lastUpdated: Date.now(),
         etag: packageEtag,
+        status: "ready",
+        lastError: undefined,
       });
 
       this.updateGlobalEtag();
@@ -68,38 +74,38 @@ export class Catalog {
         etag: packageEtag,
       });
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       logger.error("Failed to refresh package catalog", {
         package_id: packageId,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
-      
-      // If it's an auth error (OAuth/401/Unauthorized), don't throw - just cache empty tools
-      if (error instanceof Error && 
-          (error.message.includes("OAuth") || 
-           error.message.includes("401") || 
-           error.message.includes("Unauthorized") ||
-           error.message.includes("invalid_token") ||
-           error.message.includes("authorization"))) {
-        logger.info("Package requires authentication, caching empty tools", {
-          package_id: packageId,
-        });
-        
-        this.cache.set(packageId, {
-          packageId,
-          tools: [],
-          lastUpdated: Date.now(),
-          etag: `auth-pending-${Date.now()}`,
-        });
-        
-        return;
-      }
-      
-      throw error;
+
+      const { status, etag, lastError } = this.categorizeError(packageId, error);
+
+      this.cache.set(packageId, {
+        packageId,
+        tools: [],
+        lastUpdated: Date.now(),
+        etag,
+        status,
+        lastError,
+      });
+
+      this.updateGlobalEtag();
     }
   }
 
   async ensurePackageLoaded(packageId: string): Promise<void> {
-    if (!this.cache.has(packageId)) {
+    const cached = this.cache.get(packageId);
+    if (!cached) {
+      await this.refreshPackage(packageId);
+      return;
+    }
+
+    const needsRetry =
+      cached.status !== "ready" && Date.now() - cached.lastUpdated > ERROR_RETRY_INTERVAL_MS;
+
+    if (needsRetry) {
       await this.refreshPackage(packageId);
     }
   }
@@ -180,8 +186,12 @@ export class Catalog {
       // If no tools loaded (e.g., needs auth), return a descriptive message
       if (tools.length === 0) {
         const cached = this.cache.get(packageConfig.id);
-        if (cached?.etag?.startsWith('auth-pending')) {
+        if (cached?.status === "auth_required") {
           return `${packageConfig.transport} MCP package (authentication required)`;
+        }
+        if (cached?.status === "error") {
+          const reason = cached.lastError ? `: ${cached.lastError}` : "";
+          return `${packageConfig.transport} MCP package (unavailable${reason})`;
         }
         return `${packageConfig.transport} MCP package (no tools available)`;
       }
@@ -235,6 +245,15 @@ export class Catalog {
     this.updateGlobalEtag();
   }
 
+  getPackageStatus(packageId: string): CatalogStatus | "unknown" {
+    const cached = this.cache.get(packageId);
+    return cached?.status ?? "unknown";
+  }
+
+  getPackageError(packageId: string): string | undefined {
+    return this.cache.get(packageId)?.lastError;
+  }
+
   getCacheStats(): { packageCount: number; totalTools: number } {
     let totalTools = 0;
     for (const cached of this.cache.values()) {
@@ -245,5 +264,43 @@ export class Catalog {
       packageCount: this.cache.size,
       totalTools,
     };
+  }
+
+  private categorizeError(packageId: string, error: unknown): {
+    status: CatalogStatus;
+    etag: string;
+    lastError?: string;
+  } {
+    const message = error instanceof Error ? error.message : String(error);
+    if (this.isAuthError(error)) {
+      logger.info("Package requires authentication, caching empty tools", {
+        package_id: packageId,
+      });
+      return {
+        status: "auth_required",
+        etag: `auth-pending-${Date.now()}`,
+      };
+    }
+
+    return {
+      status: "error",
+      etag: `error-${Date.now()}`,
+      lastError: message,
+    };
+  }
+
+  private isAuthError(error: unknown): boolean {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+    const message = error.message.toLowerCase();
+    return (
+      error.name === "UnauthorizedError" ||
+      message.includes("oauth") ||
+      message.includes("401") ||
+      message.includes("unauthorized") ||
+      message.includes("invalid_token") ||
+      message.includes("authorization")
+    );
   }
 }

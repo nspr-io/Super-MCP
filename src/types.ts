@@ -70,6 +70,8 @@ export interface PackageInfo {
   health?: "ok" | "error" | "unavailable";
   summary: string;
   visibility: "default" | "hidden";
+  catalog_status?: "ready" | "auth_required" | "error";
+  catalog_error?: string;
 }
 
 export interface ToolInfo {
@@ -112,6 +114,7 @@ export interface UseToolInput {
   tool_id: string;
   args: any;
   dry_run?: boolean;
+  max_output_chars?: number;
 }
 
 export interface UseToolOutput {
@@ -122,6 +125,9 @@ export interface UseToolOutput {
   telemetry: {
     duration_ms: number;
     status: "ok" | "error";
+    output_chars?: number;
+    output_truncated?: boolean;
+    original_output_chars?: number;
   };
 }
 
