@@ -1,4 +1,3 @@
-import * as keytar from "keytar";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { AuthManager, AuthConfig, BeginAuthOutput, AuthStatusOutput } from "../types.js";
@@ -6,6 +5,24 @@ import { DeviceCodeAuth, TokenResponse } from "./deviceCode.js";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
+
+// Lazy-load keytar to avoid native module issues in some environments (e.g., Electron with code signing)
+let keytarModule: typeof import("keytar") | null | undefined;
+
+async function getKeytar(): Promise<typeof import("keytar") | null> {
+  if (keytarModule === undefined) {
+    try {
+      keytarModule = await import("keytar");
+      logger.debug("Keytar loaded successfully");
+    } catch (error) {
+      logger.warn("Keytar not available, will use file-based token storage", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      keytarModule = null;
+    }
+  }
+  return keytarModule;
+}
 
 interface StoredToken {
   access_token: string;
@@ -17,12 +34,13 @@ interface StoredToken {
 
 export class AuthManagerImpl implements AuthManager {
   private static readonly SERVICE_NAME = "super-mcp-router";
+  private static readonly DEFAULT_FALLBACK_DIR = path.join(process.env.HOME || "", ".super-mcp", "tokens");
   private tokens: Map<string, StoredToken> = new Map();
   private activeFlows: Map<string, { deviceCode: string; interval: number; expiresAt: number }> = new Map();
-  private fallbackDir?: string;
+  private fallbackDir: string;
 
   constructor(fallbackDir?: string) {
-    this.fallbackDir = fallbackDir;
+    this.fallbackDir = fallbackDir || AuthManagerImpl.DEFAULT_FALLBACK_DIR;
   }
 
   async beginAuth(packageId: string, config: AuthConfig, baseUrl?: string): Promise<BeginAuthOutput> {
@@ -134,32 +152,33 @@ export class AuthManagerImpl implements AuthManager {
 
     this.tokens.set(packageId, storedToken);
 
-    // Try to store in keychain first
-    try {
-      await keytar.setPassword(
-        AuthManagerImpl.SERVICE_NAME,
-        packageId,
-        JSON.stringify(storedToken)
-      );
-      logger.debug("Token stored in keychain", { package_id: packageId });
-    } catch (error) {
-      logger.warn("Failed to store token in keychain, falling back to file", {
-        package_id: packageId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-
-      // Fallback to file storage
-      await this.storeTokenFile(packageId, storedToken);
+    // Try to store in keychain first (if keytar is available)
+    const keytar = await getKeytar();
+    if (keytar) {
+      try {
+        await keytar.setPassword(
+          AuthManagerImpl.SERVICE_NAME,
+          packageId,
+          JSON.stringify(storedToken)
+        );
+        logger.debug("Token stored in keychain", { package_id: packageId });
+        this.activeFlows.delete(packageId);
+        return;
+      } catch (error) {
+        logger.warn("Failed to store token in keychain, falling back to file", {
+          package_id: packageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+
+    // Fallback to file storage
+    await this.storeTokenFile(packageId, storedToken);
 
     this.activeFlows.delete(packageId);
   }
 
   private async storeTokenFile(packageId: string, token: StoredToken): Promise<void> {
-    if (!this.fallbackDir) {
-      throw new Error("No fallback directory configured for token storage");
-    }
-
     await fs.mkdir(this.fallbackDir, { recursive: true });
     const tokenPath = path.join(this.fallbackDir, `${packageId}.token`);
     
@@ -174,20 +193,23 @@ export class AuthManagerImpl implements AuthManager {
     let token = this.tokens.get(packageId);
 
     if (!token) {
-      // Try to load from keychain
-      try {
-        const stored = await keytar.getPassword(AuthManagerImpl.SERVICE_NAME, packageId);
-        if (stored) {
-          token = JSON.parse(stored);
-          if (token) {
-            this.tokens.set(packageId, token);
+      // Try to load from keychain (if keytar is available)
+      const keytar = await getKeytar();
+      if (keytar) {
+        try {
+          const stored = await keytar.getPassword(AuthManagerImpl.SERVICE_NAME, packageId);
+          if (stored) {
+            token = JSON.parse(stored);
+            if (token) {
+              this.tokens.set(packageId, token);
+            }
           }
+        } catch (error) {
+          logger.debug("Failed to load token from keychain", {
+            package_id: packageId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
-      } catch (error) {
-        logger.debug("Failed to load token from keychain", {
-          package_id: packageId,
-          error: error instanceof Error ? error.message : String(error),
-        });
       }
 
       // Try fallback file storage
