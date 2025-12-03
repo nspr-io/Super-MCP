@@ -1,4 +1,5 @@
 import * as fs from "fs/promises";
+import * as path from "path";
 import { SuperMcpConfig, PackageConfig, McpClient, StandardServerConfig, ExtendedServerConfig } from "./types.js";
 import { StdioMcpClient } from "./clients/stdioClient.js";
 import { HttpMcpClient } from "./clients/httpClient.js";
@@ -170,54 +171,148 @@ export class PackageRegistry {
       mcpServers: {}
     };
 
-    // Load and merge all config files
+    // Track visited paths to detect circular references (using normalized/resolved paths)
+    const visitedPaths = new Set<string>();
+    // Track the load order for debugging
+    const loadOrder: string[] = [];
+    // Maximum depth to prevent accidental infinite loops
+    const MAX_CONFIG_DEPTH = 20;
+
+    /**
+     * Load a single config file and merge its contents.
+     * Recursively follows configPaths references.
+     */
+    const loadConfigFile = async (
+      configPath: string,
+      referencedFrom: string | null,
+      depth: number
+    ): Promise<void> => {
+      // Resolve to absolute path for consistent comparison
+      const normalizedPath = path.resolve(configPath);
+
+      // Check for circular references
+      if (visitedPaths.has(normalizedPath)) {
+        const chain = [...loadOrder, normalizedPath].join('\n  -> ');
+        throw new Error(
+          `Circular configPaths reference detected:\n  ${chain}\n` +
+          `Config "${normalizedPath}" was already loaded.`
+        );
+      }
+
+      // Check max depth
+      if (depth > MAX_CONFIG_DEPTH) {
+        throw new Error(
+          `Maximum config nesting depth (${MAX_CONFIG_DEPTH}) exceeded.\n` +
+          `This may indicate circular references or excessively deep nesting.\n` +
+          `Load chain: ${loadOrder.join(' -> ')}`
+        );
+      }
+
+      visitedPaths.add(normalizedPath);
+      loadOrder.push(normalizedPath);
+
+      // Load and parse the config file
+      let configData: string;
+      try {
+        configData = await fs.readFile(normalizedPath, "utf8");
+      } catch (error: any) {
+        const context = referencedFrom ? `\nReferenced from: ${referencedFrom}` : '';
+        if (error.code === 'ENOENT') {
+          throw new Error(`Config file not found: ${normalizedPath}${context}`);
+        }
+        throw new Error(`Failed to read config file ${normalizedPath}: ${error.message}${context}`);
+      }
+
+      let config: SuperMcpConfig;
+      try {
+        config = JSON.parse(configData);
+      } catch (error: any) {
+        const context = referencedFrom ? `\nReferenced from: ${referencedFrom}` : '';
+        throw new Error(`Invalid JSON in config file ${normalizedPath}: ${error.message}${context}`);
+      }
+
+      logger.info("Loading config file", { 
+        path: normalizedPath, 
+        depth,
+        referenced_from: referencedFrom || '(root)'
+      });
+
+      // Merge mcpServers
+      if (config.mcpServers) {
+        for (const [id, server] of Object.entries(config.mcpServers)) {
+          if (mergedConfig.mcpServers![id]) {
+            logger.warn("Duplicate server ID found, later config overrides", { 
+              id, 
+              config_file: normalizedPath 
+            });
+          }
+          mergedConfig.mcpServers![id] = server;
+        }
+      }
+
+      // Handle legacy packages format
+      if (config.packages) {
+        logger.warn("Legacy 'packages' format detected, converting to mcpServers", {
+          config_file: normalizedPath
+        });
+        for (const pkg of config.packages) {
+          mergedConfig.mcpServers![pkg.id] = {
+            command: pkg.command,
+            args: pkg.args,
+            env: pkg.env,
+            cwd: pkg.cwd,
+            type: pkg.transport === "http" ? (pkg.transportType || "http") : undefined,
+            url: pkg.base_url,
+            headers: pkg.extra_headers,
+            name: pkg.name,
+            description: pkg.description,
+            visibility: pkg.visibility,
+            oauth: pkg.oauth,
+            auth: pkg.auth
+          } as any;
+        }
+      }
+
+      // Process configPaths references (recursive)
+      if (config.configPaths && Array.isArray(config.configPaths)) {
+        const baseDir = path.dirname(normalizedPath);
+        
+        for (const refPath of config.configPaths) {
+          if (typeof refPath !== 'string' || !refPath.trim()) {
+            logger.warn("Invalid configPaths entry (not a string), skipping", {
+              config_file: normalizedPath,
+              entry: refPath
+            });
+            continue;
+          }
+
+          // Resolve relative paths relative to the current config file's directory
+          const resolvedRefPath = path.isAbsolute(refPath) 
+            ? refPath 
+            : path.resolve(baseDir, refPath);
+
+          logger.debug("Following configPaths reference", {
+            from: normalizedPath,
+            reference: refPath,
+            resolved: resolvedRefPath
+          });
+
+          // Recursively load the referenced config
+          await loadConfigFile(resolvedRefPath, normalizedPath, depth + 1);
+        }
+      }
+    };
+
+    // Load all root config paths
     for (const configPath of configPaths) {
       try {
-        logger.info("Loading config file", { path: configPath });
-        const configData = await fs.readFile(configPath, "utf8");
-        const config: SuperMcpConfig = JSON.parse(configData);
-
-        // Merge mcpServers
-        if (config.mcpServers) {
-          for (const [id, server] of Object.entries(config.mcpServers)) {
-            if (mergedConfig.mcpServers![id]) {
-              logger.warn("Duplicate server ID found, later config overrides", { 
-                id, 
-                config_file: configPath 
-              });
-            }
-            mergedConfig.mcpServers![id] = server;
-          }
-        }
-
-        // Handle legacy packages format
-        if (config.packages) {
-          logger.warn("Legacy 'packages' format detected, converting to mcpServers", {
-            config_file: configPath
-          });
-          for (const pkg of config.packages) {
-            mergedConfig.mcpServers![pkg.id] = {
-              command: pkg.command,
-              args: pkg.args,
-              env: pkg.env,
-              cwd: pkg.cwd,
-              type: pkg.transport === "http" ? (pkg.transportType || "http") : undefined,
-              url: pkg.base_url,
-              headers: pkg.extra_headers,
-              name: pkg.name,
-              description: pkg.description,
-              visibility: pkg.visibility,
-              oauth: pkg.oauth,
-              auth: pkg.auth
-            } as any;
-          }
-        }
+        await loadConfigFile(configPath, null, 0);
       } catch (error: any) {
         logger.error("Failed to load config file", { 
           path: configPath, 
           error: error.message 
         });
-        throw new Error(`Failed to load config file ${configPath}: ${error.message}`);
+        throw error;
       }
     }
 
@@ -231,9 +326,11 @@ export class PackageRegistry {
     PackageRegistry.checkForPlaceholders(registry.packages);
 
     logger.info("Configurations loaded successfully", {
-      config_count: configPaths.length,
+      config_count: loadOrder.length,
+      root_configs: configPaths.length,
       total_packages: registry.packages.length,
       packages: registry.packages.map(p => ({ id: p.id, transport: p.transport })),
+      load_order: loadOrder
     });
 
     return registry;

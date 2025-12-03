@@ -24,6 +24,7 @@ export interface StandardServerConfig {
 export interface SuperMcpConfig {
   mcpServers?: Record<string, StandardServerConfig | ExtendedServerConfig>;
   packages?: PackageConfig[]; // Legacy format support
+  configPaths?: string[]; // Reference other config files to merge
 }
 
 export interface ExtendedServerConfig extends StandardServerConfig {

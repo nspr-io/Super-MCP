@@ -5,6 +5,11 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.2] - 2025-11-29
+
+### Fixed
+- **Critical: HTTP mode process exit bug**: Fixed issue where HTTP server would exit immediately after starting (within 2ms) due to missing `await` on `startServer()` in CLI entry point. This caused all concurrent agent sessions to fall back to stdio mode, resulting in race conditions and tool failures.
+
 ## [1.6.0] - 2025-11-27
 
 ### Added

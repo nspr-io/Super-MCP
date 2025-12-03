@@ -158,10 +158,7 @@ async function main() {
   // Initialize logger
   initLogger(logLevel as any);
 
-  startServer({ configPaths, logLevel, transport, port }).catch(err => {
-    console.error(JSON.stringify({ level: "fatal", msg: String(err) }));
-    process.exit(1);
-  });
+  await startServer({ configPaths, logLevel, transport, port });
 }
 
 // Run main
