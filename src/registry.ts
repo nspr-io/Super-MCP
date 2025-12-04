@@ -273,6 +273,31 @@ export class PackageRegistry {
         }
       }
 
+      // Handle root-level server entries (for configs like Klavis that don't use mcpServers wrapper)
+      // A server config is identified by having 'url' (HTTP) or 'command' (stdio)
+      const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths']);
+      for (const [key, value] of Object.entries(config)) {
+        if (knownMetadataKeys.has(key)) continue;
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const entry = value as Record<string, unknown>;
+          if ('url' in entry || 'command' in entry) {
+            if (mergedConfig.mcpServers![key]) {
+              logger.warn("Duplicate server ID found, later config overrides", {
+                id: key,
+                config_file: normalizedPath
+              });
+            }
+            logger.debug("Found root-level server entry (no mcpServers wrapper)", {
+              id: key,
+              config_file: normalizedPath,
+              has_url: 'url' in entry,
+              has_command: 'command' in entry
+            });
+            mergedConfig.mcpServers![key] = value as StandardServerConfig;
+          }
+        }
+      }
+
       // Process configPaths references (recursive)
       if (config.configPaths && Array.isArray(config.configPaths)) {
         const baseDir = path.dirname(normalizedPath);
