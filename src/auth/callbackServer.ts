@@ -5,9 +5,17 @@ const logger = getLogger();
 
 export class OAuthCallbackServer {
   private server?: http.Server;
-  private port: number = 5173;
+  private port: number;
   private resolveCallback?: (code: string) => void;
   private rejectCallback?: (error: Error) => void;
+
+  constructor(port: number = 5173) {
+    this.port = port;
+  }
+
+  getPort(): number {
+    return this.port;
+  }
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {

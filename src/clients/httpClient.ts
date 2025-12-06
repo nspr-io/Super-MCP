@@ -22,9 +22,11 @@ class SimpleOAuthProvider implements OAuthClientProvider {
   private codeVerifierValue?: string;
   private savedClientInfo?: any;
   private tokenStoragePath: string;
+  private oauthPort: number;
   
-  constructor(packageId: string) {
+  constructor(packageId: string, oauthPort: number = 5173) {
     this.packageId = packageId;
+    this.oauthPort = oauthPort;
     this.tokenStoragePath = path.join(homedir(), ".super-mcp", "oauth-tokens");
   }
   
@@ -62,14 +64,14 @@ class SimpleOAuthProvider implements OAuthClientProvider {
   }
   
   get redirectUrl(): string {
-    return "http://localhost:5173/oauth/callback";
+    return `http://localhost:${this.oauthPort}/oauth/callback`;
   }
   
   get clientMetadata() {
     return {
       name: "super-mcp-router", 
       description: "MCP Router for aggregating multiple MCP servers",
-      redirect_uris: ["http://localhost:5173/oauth/callback"]
+      redirect_uris: [`http://localhost:${this.oauthPort}/oauth/callback`]
     };
   }
   
@@ -206,6 +208,10 @@ class SimpleOAuthProvider implements OAuthClientProvider {
  * Simplified HTTP MCP client that leverages SDK built-in capabilities
  * instead of custom transport pooling and OAuth management
  */
+export interface HttpMcpClientOptions {
+  oauthPort?: number;
+}
+
 export class HttpMcpClient implements McpClient {
   private client: Client;
   private transport?: SSEClientTransport | StreamableHTTPClientTransport;
@@ -214,10 +220,12 @@ export class HttpMcpClient implements McpClient {
   private isConnected: boolean = false;
   private useOAuth: boolean = false; // Only enable OAuth when explicitly requested
   private oauthProvider?: SimpleOAuthProvider; // Keep OAuth provider instance
+  private oauthPort: number;
 
-  constructor(packageId: string, config: PackageConfig) {
+  constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
     this.packageId = packageId;
     this.config = config;
+    this.oauthPort = options?.oauthPort ?? 5173;
     
     this.client = new Client(
       { name: "super-mcp-router", version: "0.1.0" },
@@ -230,13 +238,13 @@ export class HttpMcpClient implements McpClient {
     if (this.config.oauth && !this.oauthProvider) {
       if (forceOAuth) {
         // Explicitly requested - create and initialize OAuth provider
-        this.oauthProvider = new SimpleOAuthProvider(this.packageId);
+        this.oauthProvider = new SimpleOAuthProvider(this.packageId, this.oauthPort);
         await this.oauthProvider.initialize();
         this.useOAuth = true;
-        logger.debug("OAuth provider initialized (forced) for Notion server", { package_id: this.packageId });
+        logger.debug("OAuth provider initialized (forced)", { package_id: this.packageId, oauth_port: this.oauthPort });
       } else {
         // Check if we have saved tokens first
-        const tempProvider = new SimpleOAuthProvider(this.packageId);
+        const tempProvider = new SimpleOAuthProvider(this.packageId, this.oauthPort);
         await tempProvider.initialize();
         const tokens = await tempProvider.tokens();
         

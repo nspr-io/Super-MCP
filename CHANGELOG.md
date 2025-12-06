@@ -5,6 +5,25 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.5] - 2025-12-06
+
+### Added
+- **Dynamic OAuth port selection**: OAuth callback server now automatically finds an available port
+  - Tries ports 5173-5182 in sequence if default port is in use
+  - Eliminates "port already in use" errors during concurrent authentication
+  - Port is dynamically registered with OAuth providers via MCP's dynamic client registration
+- **Port finder utility**: New `findAvailablePort()` function in `src/utils/portFinder.ts`
+
+### Changed
+- `OAuthCallbackServer` now accepts port in constructor (default: 5173)
+- `HttpMcpClient` now accepts `oauthPort` option for OAuth redirect URL
+- `SimpleOAuthProvider` now uses dynamic port for redirect URLs
+- `handleAuthenticate` finds available port before starting OAuth flow
+
+### Fixed
+- Fixed OAuth failures when port 5173 is already in use by another process
+- Fixed concurrent authentication attempts conflicting on the same port
+
 ## [1.6.2] - 2025-11-29
 
 ### Fixed

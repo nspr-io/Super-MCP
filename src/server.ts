@@ -20,6 +20,7 @@ import { PackageRegistry } from "./registry.js";
 import { Catalog } from "./catalog.js";
 import { getValidator, ValidationError } from "./validator.js";
 import { getLogger } from "./logging.js";
+import { findAvailablePort } from "./utils/portFinder.js";
 
 const logger = getLogger();
 
@@ -1152,14 +1153,40 @@ async function handleAuthenticate(
   try {
     // Start OAuth callback server first (only if waiting for completion)
     let callbackServer: any = null;
+    let oauthPort = 5173; // Default port
     
     if (wait_for_completion) {
+      // Find an available port for OAuth callback
+      try {
+        oauthPort = await findAvailablePort(5173, 10);
+        logger.info("Found available OAuth port", { package_id, oauth_port: oauthPort });
+      } catch (portError) {
+        logger.error("Failed to find available port", { 
+          package_id,
+          error: portError instanceof Error ? portError.message : String(portError)
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                package_id,
+                status: "error",
+                message: "Failed to find available port for OAuth callback",
+                error: portError instanceof Error ? portError.message : String(portError),
+              }, null, 2),
+            },
+          ],
+          isError: false,
+        };
+      }
+      
       const { OAuthCallbackServer } = await import("./auth/callbackServer.js");
-      callbackServer = new OAuthCallbackServer();
+      callbackServer = new OAuthCallbackServer(oauthPort);
       
       try {
         await callbackServer.start();
-        logger.info("OAuth callback server started", { package_id });
+        logger.info("OAuth callback server started", { package_id, oauth_port: oauthPort });
         
         // Give the server a moment to be fully ready
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -1191,9 +1218,9 @@ async function handleAuthenticate(
     clients.delete(package_id);
     
     // Create a new HTTP client with OAuth enabled
-    logger.info("Creating HTTP client with OAuth enabled", { package_id });
+    logger.info("Creating HTTP client with OAuth enabled", { package_id, oauth_port: oauthPort });
     const { HttpMcpClient } = await import("./clients/httpClient.js");
-    const httpClient = new HttpMcpClient(package_id, pkg);
+    const httpClient = new HttpMcpClient(package_id, pkg, { oauthPort });
     
     // Trigger OAuth connection
     logger.info("Triggering OAuth connection", { package_id });
@@ -1410,10 +1437,7 @@ async function handleAuthenticateAll(
     wait_for_completion,
   });
   
-  // Ensure callback server is running
-  // const { SimpleOAuthProvider } = await import("./auth/simpleOAuthProvider.js");
-  // await SimpleOAuthProvider.startGlobalCallbackServer();
-  logger.info("OAuth callback server ready on port 5173");
+  // Note: Each package auth will find its own available port dynamically
 
   const packages = registry.getPackages({ safe_only: false });
   const results = [];
