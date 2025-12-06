@@ -1256,15 +1256,30 @@ async function handleAuthenticate(
         await httpClient.finishOAuth(authCode);
         
         // Now the client should be connected with OAuth tokens
-        logger.info("OAuth flow completed, checking connection", { package_id });
+        logger.info("OAuth flow completed, verifying connection", { package_id });
         
         // Store the connected client
         clients.set(package_id, httpClient);
         
-        // Check if it worked
-        const health = httpClient.healthCheck ? await httpClient.healthCheck() : "ok";
+        // Quick health check with timeout - some servers (like Stripe) can be slow
+        // If it times out, tokens are still saved and will work on first tool use
+        let health: "ok" | "error" | "needs_auth" | "timeout" = "timeout";
+        try {
+          const healthPromise = httpClient.healthCheck ? httpClient.healthCheck() : Promise.resolve("ok" as const);
+          const timeoutPromise = new Promise<"timeout">((resolve) => 
+            setTimeout(() => resolve("timeout"), 20000) // 20 second timeout for health check
+          );
+          health = await Promise.race([healthPromise, timeoutPromise]);
+        } catch (err) {
+          logger.warn("Connection verification failed - tokens saved but server rejected request. Try using a tool to confirm.", { 
+            package_id, 
+            error: err instanceof Error ? err.message : String(err) 
+          });
+          health = "error";
+        }
         
         if (health === "ok") {
+          logger.info("Authentication verified successfully", { package_id });
           return {
             content: [
               {
@@ -1272,14 +1287,44 @@ async function handleAuthenticate(
                 text: JSON.stringify({
                   package_id,
                   status: "authenticated",
-                  message: "Successfully authenticated",
+                  message: "Successfully authenticated and verified. Ready to use.",
+                }, null, 2),
+              },
+            ],
+            isError: false,
+          };
+        } else if (health === "timeout") {
+          // Tokens saved, but verification timed out - this is OK, will verify on first use
+          logger.info("Authentication completed, verification pending (slow server)", { package_id });
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  package_id,
+                  status: "authenticated",
+                  message: "Successfully authenticated. The server was slow to respond, so full verification will happen on first tool use. Try using a tool to confirm everything works.",
                 }, null, 2),
               },
             ],
             isError: false,
           };
         } else {
-          throw new Error("Authentication succeeded but connection failed");
+          // Health check returned error or needs_auth - something is wrong
+          logger.error("Authentication verification failed", { package_id, health });
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  package_id,
+                  status: "error",
+                  message: `Authentication completed but verification failed (${health}). The OAuth tokens were saved, but the server rejected the connection. Try using a tool - if it fails, you may need to re-authenticate.`,
+                }, null, 2),
+              },
+            ],
+            isError: true,
+          };
         }
       } catch (error) {
         logger.error("OAuth failed", {
