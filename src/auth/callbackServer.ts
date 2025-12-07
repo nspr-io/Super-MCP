@@ -99,6 +99,9 @@ export class OAuthCallbackServer {
 
   async stop(): Promise<void> {
     if (this.server) {
+      // Force close immediately - don't wait for keep-alive connections
+      // This prevents 60-75 second delays from browser keep-alive
+      this.server.closeAllConnections();
       return new Promise((resolve) => {
         this.server!.close(() => {
           logger.info("OAuth callback server stopped");

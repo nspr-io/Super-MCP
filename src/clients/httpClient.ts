@@ -205,6 +205,66 @@ class SimpleOAuthProvider implements OAuthClientProvider {
 }
 
 /**
+ * OAuth provider wrapper that enables silent token refresh but blocks browser redirects.
+ * Used during normal connect() to allow refresh tokens to work while preventing
+ * unexpected browser windows during tool discovery operations.
+ */
+class RefreshOnlyOAuthProvider implements OAuthClientProvider {
+  private delegate: SimpleOAuthProvider;
+  
+  constructor(delegate: SimpleOAuthProvider) {
+    this.delegate = delegate;
+  }
+  
+  // Delegate all standard methods to the underlying provider
+  get redirectUrl(): string {
+    return this.delegate.redirectUrl;
+  }
+  
+  get clientMetadata() {
+    return this.delegate.clientMetadata;
+  }
+  
+  async clientInformation() {
+    return this.delegate.clientInformation();
+  }
+  
+  async saveClientInformation(info: any) {
+    return this.delegate.saveClientInformation(info);
+  }
+  
+  async tokens() {
+    return this.delegate.tokens();
+  }
+  
+  async saveTokens(tokens: any) {
+    return this.delegate.saveTokens(tokens);
+  }
+  
+  async saveCodeVerifier(verifier: string) {
+    return this.delegate.saveCodeVerifier(verifier);
+  }
+  
+  async codeVerifier() {
+    return this.delegate.codeVerifier();
+  }
+  
+  // Override: throw error instead of opening browser
+  // This is the key difference - allows refresh but blocks browser redirect
+  async redirectToAuthorization(_authUrl: URL): Promise<void> {
+    logger.info("OAuth browser redirect blocked (refresh-only mode)", {
+      message: "Use authenticate() to sign in"
+    });
+    throw new Error("Authentication required. Use 'authenticate(package_id: \"...\")' to sign in.");
+  }
+  
+  // Delegate optional method
+  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier') {
+    return this.delegate.invalidateCredentials(scope);
+  }
+}
+
+/**
  * Simplified HTTP MCP client that leverages SDK built-in capabilities
  * instead of custom transport pooling and OAuth management
  */
@@ -219,7 +279,7 @@ export class HttpMcpClient implements McpClient {
   private config: PackageConfig;
   private isConnected: boolean = false;
   private useOAuth: boolean = false; // Only enable OAuth when explicitly requested
-  private oauthProvider?: SimpleOAuthProvider; // Keep OAuth provider instance
+  private oauthProvider?: OAuthClientProvider; // OAuth provider - type varies based on flow
   private oauthPort: number;
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
@@ -236,26 +296,29 @@ export class HttpMcpClient implements McpClient {
   private async initializeOAuthIfNeeded(forceOAuth: boolean = false) {
     // Only initialize OAuth provider when OAuth is enabled in config
     if (this.config.oauth && !this.oauthProvider) {
+      // Always create and initialize the base provider first
+      const simpleProvider = new SimpleOAuthProvider(this.packageId, this.oauthPort);
+      await simpleProvider.initialize();
+      
       if (forceOAuth) {
-        // Explicitly requested - create and initialize OAuth provider
-        this.oauthProvider = new SimpleOAuthProvider(this.packageId, this.oauthPort);
-        await this.oauthProvider.initialize();
+        // Explicitly requested (via authenticate()) - use raw provider for browser flow
+        this.oauthProvider = simpleProvider;
         this.useOAuth = true;
-        logger.debug("OAuth provider initialized (forced)", { package_id: this.packageId, oauth_port: this.oauthPort });
+        logger.debug("OAuth provider initialized for browser flow", { package_id: this.packageId, oauth_port: this.oauthPort });
       } else {
-        // Check if we have saved tokens first
-        const tempProvider = new SimpleOAuthProvider(this.packageId, this.oauthPort);
-        await tempProvider.initialize();
-        const tokens = await tempProvider.tokens();
+        // Normal connect: wrap provider to enable refresh but block browser redirects
+        const tokens = await simpleProvider.tokens();
         
         if (tokens && tokens.access_token) {
-          // We have tokens, use OAuth
-          this.oauthProvider = tempProvider;
+          // Wrap in RefreshOnlyOAuthProvider - allows silent refresh, blocks browser
+          // If refresh succeeds: works silently
+          // If refresh fails: throws error instead of opening browser
+          this.oauthProvider = new RefreshOnlyOAuthProvider(simpleProvider);
           this.useOAuth = true;
-          logger.debug("OAuth provider initialized with existing tokens", { package_id: this.packageId });
+          logger.debug("OAuth provider initialized for refresh-only mode (no browser)", { package_id: this.packageId });
         } else {
-          // No tokens, don't use OAuth (will fail with auth required)
-          logger.debug("No OAuth tokens found, will connect without OAuth", { package_id: this.packageId });
+          // No tokens - don't set provider, will fail with auth required error
+          logger.debug("No OAuth tokens found, will connect without auth", { package_id: this.packageId });
         }
       }
     }
@@ -301,8 +364,8 @@ export class HttpMcpClient implements McpClient {
           message: "Clearing invalid tokens and requiring re-authentication",
         });
         
-        // Use SDK's invalidateCredentials method
-        if (this.oauthProvider) {
+        // Use SDK's invalidateCredentials method (optional on interface, but our providers implement it)
+        if (this.oauthProvider?.invalidateCredentials) {
           // Clear all credentials (tokens, client info, verifier)
           await this.oauthProvider.invalidateCredentials('all');
           logger.info("Invalidated OAuth credentials using SDK method", { package_id: this.packageId });
@@ -358,8 +421,9 @@ export class HttpMcpClient implements McpClient {
   private getTransportOptions() {
     const options: any = {};
     
-    // Pass OAuth provider directly to transport (not via fetch middleware)
-    // The transport has built-in OAuth handling
+    // Pass OAuth provider to transport if available
+    // - For normal connect: RefreshOnlyOAuthProvider (allows refresh, blocks browser)
+    // - For authenticate(): SimpleOAuthProvider (full browser flow)
     if (this.oauthProvider) {
       options.authProvider = this.oauthProvider;
       logger.debug("OAuth provider added to transport", { package_id: this.packageId });
@@ -367,7 +431,6 @@ export class HttpMcpClient implements McpClient {
 
     // Add extra headers if specified
     if (this.config.extra_headers) {
-      // For transports, headers go in requestInit
       options.requestInit = {
         headers: this.config.extra_headers
       };
