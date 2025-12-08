@@ -3,13 +3,16 @@ import { getLogger } from "./logging.js";
 const logger = getLogger();
 
 export interface SecurityConfig {
-  // Blocklist mode (default): block tools/packages that match
+  // Blocklist: block tools/packages that match these patterns
   blockedTools?: string[];      // Exact names or regex patterns like "/.*delete.*/i"
   blockedPackages?: string[];   // Package IDs to completely block
   
-  // Allowlist mode: only allow tools/packages that match (if set, blocklist is ignored)
-  allowedTools?: string[];      // If set, only these tools are allowed
-  allowedPackages?: string[];   // If set, only these packages are allowed
+  // Allowlist: only allow tools/packages that match (layered with blocklist)
+  // When both allowlist and blocklist are configured, BOTH apply:
+  // 1. Must be on allowlist (if configured)
+  // 2. Must NOT be on blocklist (if configured)
+  allowedTools?: string[];      // If set, only these tools are candidates
+  allowedPackages?: string[];   // If set, only these packages are candidates
   
   // Logging
   logBlockedAttempts?: boolean; // Log when tools are blocked (default: true)
@@ -32,7 +35,6 @@ export class SecurityPolicy {
   private blockedPackagePatterns: CompiledPattern[] = [];
   private allowedToolPatterns: CompiledPattern[] = [];
   private allowedPackagePatterns: CompiledPattern[] = [];
-  private useAllowlist: boolean = false;
 
   constructor(config: SecurityConfig = {}) {
     this.config = config;
@@ -40,27 +42,22 @@ export class SecurityPolicy {
   }
 
   private compilePatterns(): void {
-    // Determine mode: allowlist takes precedence if any allowed* fields are set
-    this.useAllowlist = !!(
-      (this.config.allowedTools && this.config.allowedTools.length > 0) ||
-      (this.config.allowedPackages && this.config.allowedPackages.length > 0)
-    );
+    // Compile all pattern lists (layered model: both allowlist and blocklist apply)
+    this.blockedToolPatterns = this.compilePatternList(this.config.blockedTools || []);
+    this.blockedPackagePatterns = this.compilePatternList(this.config.blockedPackages || []);
+    this.allowedToolPatterns = this.compilePatternList(this.config.allowedTools || []);
+    this.allowedPackagePatterns = this.compilePatternList(this.config.allowedPackages || []);
 
-    if (this.useAllowlist) {
-      this.allowedToolPatterns = this.compilePatternList(this.config.allowedTools || []);
-      this.allowedPackagePatterns = this.compilePatternList(this.config.allowedPackages || []);
-      logger.info("Security policy initialized in ALLOWLIST mode", {
-        allowed_tools: this.config.allowedTools?.length || 0,
-        allowed_packages: this.config.allowedPackages?.length || 0,
-      });
-    } else {
-      this.blockedToolPatterns = this.compilePatternList(this.config.blockedTools || []);
-      this.blockedPackagePatterns = this.compilePatternList(this.config.blockedPackages || []);
-      logger.info("Security policy initialized in BLOCKLIST mode", {
-        blocked_tools: this.config.blockedTools?.length || 0,
-        blocked_packages: this.config.blockedPackages?.length || 0,
-      });
-    }
+    const hasAllowlist = this.allowedToolPatterns.length > 0 || this.allowedPackagePatterns.length > 0;
+    const hasBlocklist = this.blockedToolPatterns.length > 0 || this.blockedPackagePatterns.length > 0;
+
+    logger.info("Security policy initialized", {
+      mode: hasAllowlist && hasBlocklist ? "layered" : hasAllowlist ? "allowlist" : hasBlocklist ? "blocklist" : "disabled",
+      allowed_tools: this.allowedToolPatterns.length,
+      allowed_packages: this.allowedPackagePatterns.length,
+      blocked_tools: this.blockedToolPatterns.length,
+      blocked_packages: this.blockedPackagePatterns.length,
+    });
   }
 
   private compilePatternList(patterns: string[]): CompiledPattern[] {
@@ -114,29 +111,26 @@ export class SecurityPolicy {
 
   /**
    * Check if a package is blocked.
+   * Uses layered security: must pass allowlist (if configured) AND not be on blocklist (if configured).
    * @param packageId The package ID to check
    * @returns BlockCheckResult with blocked status and reason
    */
   isPackageBlocked(packageId: string): BlockCheckResult {
-    if (this.useAllowlist) {
-      // In allowlist mode: block if NOT in allowed list
-      if (this.allowedPackagePatterns.length === 0) {
-        // No package allowlist means all packages allowed
-        return { blocked: false };
-      }
-      
+    // Gate 1: Allowlist check (if configured, must be on it)
+    if (this.allowedPackagePatterns.length > 0) {
       const match = this.matchesAnyPattern(packageId, this.allowedPackagePatterns);
       if (!match) {
         const result: BlockCheckResult = {
           blocked: true,
           reason: `Package '${packageId}' is not in the allowed packages list`,
         };
-        this.logBlockedAttempt("package", packageId, result.reason!);
+        this.logBlockedAttempt("package", packageId, result.reason!, "allowlist");
         return result;
       }
-      return { blocked: false };
-    } else {
-      // In blocklist mode: block if in blocked list
+    }
+
+    // Gate 2: Blocklist check (if configured, must not be on it)
+    if (this.blockedPackagePatterns.length > 0) {
       const match = this.matchesAnyPattern(packageId, this.blockedPackagePatterns);
       if (match) {
         const result: BlockCheckResult = {
@@ -145,15 +139,17 @@ export class SecurityPolicy {
             ? `Package '${packageId}' blocked by pattern: ${match.original}`
             : `Package '${packageId}' is explicitly blocked`,
         };
-        this.logBlockedAttempt("package", packageId, result.reason!);
+        this.logBlockedAttempt("package", packageId, result.reason!, "blocklist");
         return result;
       }
-      return { blocked: false };
     }
+
+    return { blocked: false };
   }
 
   /**
    * Check if a tool is blocked.
+   * Uses layered security: must pass allowlist (if configured) AND not be on blocklist (if configured).
    * @param packageId The package ID
    * @param toolId The tool ID (without namespace prefix)
    * @returns BlockCheckResult with blocked status and reason
@@ -168,13 +164,8 @@ export class SecurityPolicy {
     // Build the fully qualified tool name for matching
     const fullToolName = `${packageId}__${toolId}`;
 
-    if (this.useAllowlist) {
-      // In allowlist mode: block if NOT in allowed list
-      if (this.allowedToolPatterns.length === 0) {
-        // No tool allowlist means all tools allowed (package already checked)
-        return { blocked: false };
-      }
-      
+    // Gate 1: Allowlist check (if configured, must be on it)
+    if (this.allowedToolPatterns.length > 0) {
       // Check both the full name and just the tool name
       const matchFull = this.matchesAnyPattern(fullToolName, this.allowedToolPatterns);
       const matchShort = this.matchesAnyPattern(toolId, this.allowedToolPatterns);
@@ -184,12 +175,13 @@ export class SecurityPolicy {
           blocked: true,
           reason: `Tool '${fullToolName}' is not in the allowed tools list`,
         };
-        this.logBlockedAttempt("tool", fullToolName, result.reason!);
+        this.logBlockedAttempt("tool", fullToolName, result.reason!, "allowlist");
         return result;
       }
-      return { blocked: false };
-    } else {
-      // In blocklist mode: block if in blocked list
+    }
+
+    // Gate 2: Blocklist check (if configured, must not be on it)
+    if (this.blockedToolPatterns.length > 0) {
       // Check both the full name and just the tool name
       const matchFull = this.matchesAnyPattern(fullToolName, this.blockedToolPatterns);
       const matchShort = this.matchesAnyPattern(toolId, this.blockedToolPatterns);
@@ -202,20 +194,21 @@ export class SecurityPolicy {
             ? `Tool '${fullToolName}' blocked by pattern: ${match.original}`
             : `Tool '${fullToolName}' is explicitly blocked`,
         };
-        this.logBlockedAttempt("tool", fullToolName, result.reason!);
+        this.logBlockedAttempt("tool", fullToolName, result.reason!, "blocklist");
         return result;
       }
-      return { blocked: false };
     }
+
+    return { blocked: false };
   }
 
-  private logBlockedAttempt(type: "tool" | "package", name: string, reason: string): void {
+  private logBlockedAttempt(type: "tool" | "package", name: string, reason: string, gate: "allowlist" | "blocklist"): void {
     if (this.config.logBlockedAttempts !== false) {
       logger.warn(`Blocked ${type} access attempt`, {
         type,
         name,
         reason,
-        mode: this.useAllowlist ? "allowlist" : "blocklist",
+        gate,
       });
     }
   }
@@ -243,7 +236,7 @@ export class SecurityPolicy {
    * Get a summary of the security policy for logging/debugging.
    */
   getSummary(): {
-    mode: "blocklist" | "allowlist" | "disabled";
+    mode: "blocklist" | "allowlist" | "layered" | "disabled";
     blockedToolCount: number;
     blockedPackageCount: number;
     allowedToolCount: number;
@@ -259,8 +252,20 @@ export class SecurityPolicy {
       };
     }
 
+    const hasAllowlist = this.allowedToolPatterns.length > 0 || this.allowedPackagePatterns.length > 0;
+    const hasBlocklist = this.blockedToolPatterns.length > 0 || this.blockedPackagePatterns.length > 0;
+
+    let mode: "blocklist" | "allowlist" | "layered";
+    if (hasAllowlist && hasBlocklist) {
+      mode = "layered";
+    } else if (hasAllowlist) {
+      mode = "allowlist";
+    } else {
+      mode = "blocklist";
+    }
+
     return {
-      mode: this.useAllowlist ? "allowlist" : "blocklist",
+      mode,
       blockedToolCount: this.blockedToolPatterns.length,
       blockedPackageCount: this.blockedPackagePatterns.length,
       allowedToolCount: this.allowedToolPatterns.length,
