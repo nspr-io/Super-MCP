@@ -421,6 +421,8 @@ npm run build
 - **Error Handling**: Comprehensive error codes and messages with contextual help
 - **Improved Authentication**: Clear error messages guiding users to authenticate when needed
 - **Built-in Help System**: Interactive guidance with `get_help` tool
+- **Security Policy**: Block or allow specific tools/packages with regex pattern support
+- **Hot Reload**: Security config changes apply immediately without restart
 - **Portable**: Everything contained within this directory
 
 ## Project Structure
@@ -431,16 +433,19 @@ src/
 ├── server.ts           # MCP server with meta-tools
 ├── registry.ts         # Config loading & package management
 ├── catalog.ts          # Tool caching & discovery
+├── security.ts         # Security policy (allowlist/blocklist)
+├── configWatcher.ts    # Config hot-reload for security
 ├── summarize.ts        # Tool summaries & arg skeletons
 ├── validator.ts        # Argument validation
 ├── logging.ts          # Structured logging
 ├── types.ts            # TypeScript definitions
+├── handlers/           # Request handlers
+│   ├── useTool.ts      # Tool execution with security checks
+│   ├── listTools.ts    # Tool discovery with blocked status
+│   └── ...             # Other handlers
 ├── auth/
-│   ├── manager.ts      # Token storage (keychain + file fallback)
-│   ├── deviceCode.ts   # Device code OAuth flow
-│   ├── browserOAuthProvider.ts # Browser OAuth provider
 │   ├── callbackServer.ts # OAuth callback server
-│   └── globalOAuthLock.ts # OAuth flow coordination
+│   └── providers/      # OAuth providers
 └── clients/
     ├── stdioClient.ts  # Stdio MCP client
     └── httpClient.ts   # HTTP MCP client
@@ -448,6 +453,7 @@ src/
 
 ## Security
 
+### Credential Safety
 - **Never commit your `super-mcp-config.json`** - it contains API keys and credentials
 - Tokens stored securely in OS keychain (with file fallback)
 - All sensitive data redacted from logs
@@ -455,6 +461,59 @@ src/
 - Device code flow (no local HTTP server required)
 
 ⚠️ **Important**: The `.gitignore` file excludes your config file, but double-check before committing!
+
+### Security Policy (Tool Blocking)
+
+Super MCP Router includes a security policy system that lets you control which tools and packages can be used. This is useful for:
+- Blocking dangerous operations (e.g., file deletion)
+- Restricting access to specific packages
+- Creating allowlists for sensitive environments
+
+#### Configuration
+
+Add a `security` section to your config file:
+
+```json
+{
+  "security": {
+    "blockedTools": [
+      "filesystem__delete_file",
+      "filesystem__write_file",
+      "/.*delete.*/i",
+      "/.*remove.*/i"
+    ],
+    "blockedPackages": ["dangerous-package"],
+    "allowedPackages": ["filesystem", "github"],
+    "allowedTools": ["filesystem__read_file", "filesystem__list_directory"],
+    "logBlockedAttempts": true
+  },
+  "mcpServers": { ... }
+}
+```
+
+#### Layered Security Model
+
+Both allowlist and blocklist rules apply together (layered):
+
+1. **Allowlist gate**: If `allowedPackages` or `allowedTools` is configured, the item must be on the list
+2. **Blocklist gate**: If `blockedPackages` or `blockedTools` is configured, the item must NOT be on the list
+
+| Configuration | Behavior |
+|--------------|----------|
+| Only blocklist | Everything allowed except blocked items |
+| Only allowlist | Only allowed items permitted |
+| Both configured | Must be on allowlist AND not on blocklist |
+| Neither configured | Everything allowed |
+
+#### Pattern Matching
+
+Tools can be specified as:
+- **Exact names**: `"filesystem__delete_file"`
+- **Regex patterns**: `"/.*delete.*/i"` (delimited by `/`, optional flags)
+
+#### Hot Reload
+
+Security configuration is hot-reloaded when config files change - no server restart required. Edit your config file and the new rules apply immediately to subsequent tool calls.
 
 ## Built-in Help System
 

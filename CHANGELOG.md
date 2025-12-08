@@ -5,6 +5,44 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2025-12-08
+
+### Changed
+- **Layered security model**: Allowlist and blocklist now both apply together
+  - Previously: If allowlist was configured, blocklist was ignored
+  - Now: Both gates apply - must be on allowlist (if configured) AND not on blocklist (if configured)
+  - This enables configurations like "allow only filesystem package, but block delete operations within it"
+- Security policy `mode` in logs now shows "layered" when both allowlist and blocklist are configured
+- Blocked attempt logs now show which `gate` (allowlist vs blocklist) caused the block
+
+## [2.1.0] - 2025-12-08
+
+### Added
+- **Security config hot-reload**: Security policy automatically reloads when config files change
+  - No server restart required to update blocked/allowed tools
+  - All config files in the chain are watched (including `configPaths` references)
+  - Changes debounced (500ms) to handle editor save behavior
+  - Fail-safe: if reload fails (invalid JSON), existing policy is kept
+- New `chokidar` dependency for robust cross-platform file watching
+
+## [2.0.0] - 2025-12-08
+
+### Added
+- **Security policy system**: Block or allow specific tools and packages
+  - `blockedTools`: Block specific tools by exact name or regex pattern
+  - `blockedPackages`: Block entire packages
+  - `allowedTools`: Allowlist mode - only specified tools permitted
+  - `allowedPackages`: Allowlist mode - only specified packages permitted
+  - `logBlockedAttempts`: Control logging of blocked access attempts
+- Pattern matching support: exact strings or regex patterns (`"/.*delete.*/i"`)
+- Security status shown in `list_tools` output (blocked tools marked with reason)
+- New error code `TOOL_BLOCKED` (-32008) for security policy violations
+
+### Changed
+- Major codebase refactoring for improved maintainability
+- Handler functions extracted to separate modules
+- Improved code organization and separation of concerns
+
 ## [1.6.5] - 2025-12-06
 
 ### Added
