@@ -25,6 +25,13 @@ export interface SuperMcpConfig {
   mcpServers?: Record<string, StandardServerConfig | ExtendedServerConfig>;
   packages?: PackageConfig[]; // Legacy format support
   configPaths?: string[]; // Reference other config files to merge
+  security?: {
+    blockedTools?: string[];      // Exact names or regex patterns like "/.*delete.*/i"
+    blockedPackages?: string[];   // Package IDs to completely block
+    allowedTools?: string[];      // If set, only these tools are allowed (allowlist mode)
+    allowedPackages?: string[];   // If set, only these packages are allowed
+    logBlockedAttempts?: boolean; // Log when tools are blocked (default: true)
+  };
 }
 
 export interface ExtendedServerConfig extends StandardServerConfig {
@@ -83,6 +90,8 @@ export interface ToolInfo {
   args_skeleton?: any;
   schema_hash: string;
   schema?: any;
+  blocked?: boolean;
+  blocked_reason?: string;
 }
 
 export interface ListToolPackagesInput {
@@ -179,5 +188,6 @@ export const ERROR_CODES = {
   AUTH_REQUIRED: -32005,
   AUTH_INCOMPLETE: -32006,
   DOWNSTREAM_ERROR: -32007,
+  TOOL_BLOCKED: -32008,
   INTERNAL_ERROR: -32603,
 } as const;

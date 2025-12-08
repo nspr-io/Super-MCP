@@ -1,4 +1,14 @@
 {
+  "security": {
+    "blockedTools": [
+      "filesystem__delete_file",
+      "filesystem__write_file",
+      "/.*delete.*/i",
+      "/.*remove.*/i"
+    ],
+    "blockedPackages": [],
+    "logBlockedAttempts": true
+  },
   "mcpServers": {
     "filesystem": {
       "command": "npx",

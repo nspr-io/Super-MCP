@@ -3,8 +3,8 @@ import * as path from "path";
 import { SuperMcpConfig, PackageConfig, McpClient, StandardServerConfig, ExtendedServerConfig } from "./types.js";
 import { StdioMcpClient } from "./clients/stdioClient.js";
 import { HttpMcpClient } from "./clients/httpClient.js";
-import { AuthManagerImpl } from "./auth/manager.js";
 import { getLogger } from "./logging.js";
+import { SecurityPolicy, SecurityConfig, setSecurityPolicy } from "./security.js";
 
 const logger = getLogger();
 
@@ -89,12 +89,10 @@ export class PackageRegistry {
   private packages: PackageConfig[];
   private clients: Map<string, McpClient> = new Map();
   private clientPromises: Map<string, Promise<McpClient>> = new Map();
-  private authManager: AuthManagerImpl;
 
-  constructor(config: SuperMcpConfig, authManager: AuthManagerImpl) {
+  constructor(config: SuperMcpConfig) {
     this.config = config;
     this.packages = this.normalizeConfig(config);
-    this.authManager = authManager;
   }
 
   private normalizeConfig(config: SuperMcpConfig): PackageConfig[] {
@@ -168,7 +166,8 @@ export class PackageRegistry {
 
     // Merged configuration
     const mergedConfig: SuperMcpConfig = {
-      mcpServers: {}
+      mcpServers: {},
+      security: {}
     };
 
     // Track visited paths to detect circular references (using normalized/resolved paths)
@@ -273,9 +272,34 @@ export class PackageRegistry {
         }
       }
 
+      // Merge security config (arrays are concatenated, booleans use latest value)
+      if (config.security) {
+        const sec = mergedConfig.security!;
+        if (config.security.blockedTools) {
+          sec.blockedTools = [...(sec.blockedTools || []), ...config.security.blockedTools];
+        }
+        if (config.security.blockedPackages) {
+          sec.blockedPackages = [...(sec.blockedPackages || []), ...config.security.blockedPackages];
+        }
+        if (config.security.allowedTools) {
+          sec.allowedTools = [...(sec.allowedTools || []), ...config.security.allowedTools];
+        }
+        if (config.security.allowedPackages) {
+          sec.allowedPackages = [...(sec.allowedPackages || []), ...config.security.allowedPackages];
+        }
+        if (config.security.logBlockedAttempts !== undefined) {
+          sec.logBlockedAttempts = config.security.logBlockedAttempts;
+        }
+        logger.debug("Merged security config", {
+          config_file: normalizedPath,
+          blocked_tools: config.security.blockedTools?.length || 0,
+          blocked_packages: config.security.blockedPackages?.length || 0,
+        });
+      }
+
       // Handle root-level server entries (for configs like Klavis that don't use mcpServers wrapper)
       // A server config is identified by having 'url' (HTTP) or 'command' (stdio)
-      const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths']);
+      const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths', 'security']);
       for (const [key, value] of Object.entries(config)) {
         if (knownMetadataKeys.has(key)) continue;
         if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -341,8 +365,17 @@ export class PackageRegistry {
       }
     }
 
-    const authManager = new AuthManagerImpl();
-    const registry = new PackageRegistry(mergedConfig, authManager);
+    const registry = new PackageRegistry(mergedConfig);
+
+    // Initialize security policy
+    const securityConfig: SecurityConfig = mergedConfig.security || {};
+    const securityPolicy = new SecurityPolicy(securityConfig);
+    setSecurityPolicy(securityPolicy);
+    
+    const secSummary = securityPolicy.getSummary();
+    if (secSummary.mode !== "disabled") {
+      logger.info("Security policy active", secSummary);
+    }
 
     // Validate normalized config
     PackageRegistry.validateConfig(registry.packages);
@@ -589,10 +622,6 @@ export class PackageRegistry {
     logger.info("All clients closed");
   }
 
-  getAuthManager(): AuthManagerImpl {
-    return this.authManager;
-  }
-
   async healthCheck(packageId: string): Promise<"ok" | "error" | "unavailable"> {
     try {
       const client = await this.getClient(packageId);
@@ -611,68 +640,6 @@ export class PackageRegistry {
         error: error instanceof Error ? error.message : String(error),
       });
       return "unavailable";
-    }
-  }
-  
-  async reconnectWithAuth(packageId: string): Promise<void> {
-    const config = this.getPackage(packageId);
-    if (!config) {
-      throw new Error(`Package not found: ${packageId}`);
-    }
-    
-    if (config.transport === "stdio") {
-      throw new Error("stdio packages don't require authentication");
-    }
-    
-    logger.info("Reconnecting package with authentication", {
-      package_id: packageId,
-      transport: config.transport,
-    });
-    
-    // Clear any existing client
-    this.clients.delete(packageId);
-    
-    // Create a new HTTP client
-    const client = new HttpMcpClient(packageId, config);
-    
-    // Call the reconnectWithAuth method
-    if ("reconnectWithAuth" in client && typeof client.reconnectWithAuth === "function") {
-      await client.reconnectWithAuth();
-      // Store the client after reconnection
-      this.clients.set(packageId, client);
-    } else {
-      throw new Error("Client doesn't support reconnection");
-    }
-  }
-  
-  async triggerAuthentication(packageId: string): Promise<void> {
-    const config = this.getPackage(packageId);
-    if (!config) {
-      throw new Error(`Package not found: ${packageId}`);
-    }
-    
-    if (config.transport === "stdio") {
-      throw new Error("stdio packages don't require authentication");
-    }
-    
-    logger.info("Triggering authentication for package", {
-      package_id: packageId,
-      transport: config.transport,
-    });
-    
-    // Clear any existing client
-    this.clients.delete(packageId);
-    
-    // Create a new HTTP client with authentication mode
-    const client = new HttpMcpClient(packageId, config);
-    
-    // Call the triggerAuthentication method
-    if ("triggerAuthentication" in client && typeof client.triggerAuthentication === "function") {
-      await client.triggerAuthentication();
-      // Store the client after authentication is triggered
-      this.clients.set(packageId, client);
-    } else {
-      throw new Error("Client doesn't support authentication");
     }
   }
 }
