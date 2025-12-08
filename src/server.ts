@@ -8,6 +8,7 @@ import { PackageRegistry } from "./registry.js";
 import { Catalog } from "./catalog.js";
 import { getValidator } from "./validator.js";
 import { getLogger } from "./logging.js";
+import { ConfigWatcher } from "./configWatcher.js";
 import {
   handleListToolPackages,
   handleListTools,
@@ -43,6 +44,9 @@ export async function startServer(options: {
     const registry = await PackageRegistry.fromConfigFiles(paths);
     const catalog = new Catalog(registry);
     const validator = getValidator();
+    
+    const configWatcher = new ConfigWatcher(paths);
+    await configWatcher.start();
 
     const server = new Server(
       {
@@ -367,6 +371,7 @@ export async function startServer(options: {
 
       const shutdown = async () => {
         logger.info("Shutting down HTTP server...");
+        await configWatcher.stop();
         httpServer.close(() => {
           logger.info("HTTP server closed");
         });
@@ -388,6 +393,7 @@ export async function startServer(options: {
 
       const shutdown = async () => {
         logger.info("Shutting down...");
+        await configWatcher.stop();
         await registry.closeAll();
         process.exit(0);
       };
