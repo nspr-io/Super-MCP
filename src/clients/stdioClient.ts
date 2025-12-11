@@ -1,10 +1,18 @@
 import { spawn, ChildProcess } from "child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import PQueue from "p-queue";
 import { McpClient, PackageConfig } from "../types.js";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
+
+// STDIO transport uses a single stdin/stdout pipe, so requests must be serialized
+// to avoid race conditions and "stream busy" errors documented in:
+// - https://github.com/modelcontextprotocol/csharp-sdk/issues/88
+// - https://github.com/modelcontextprotocol/python-sdk/issues/824
+// - https://github.com/jlowin/fastmcp/issues/1625
+const STDIO_CONCURRENCY = 1;
 
 export class StdioMcpClient implements McpClient {
   private client: Client;
@@ -12,10 +20,14 @@ export class StdioMcpClient implements McpClient {
   private process?: ChildProcess;
   private packageId: string;
   private config: PackageConfig;
+  private requestQueue: PQueue;
 
   constructor(packageId: string, config: PackageConfig) {
     this.packageId = packageId;
     this.config = config;
+    
+    // Request queue to serialize concurrent calls to this STDIO client
+    this.requestQueue = new PQueue({ concurrency: STDIO_CONCURRENCY });
     
     // We'll initialize the client and transport in connect()
     this.client = new Client(
@@ -116,24 +128,28 @@ export class StdioMcpClient implements McpClient {
   async listTools(): Promise<any[]> {
     logger.debug("Listing tools from stdio MCP", {
       package_id: this.packageId,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
     });
 
-    try {
-      const response = await this.client.listTools();
-      
-      logger.debug("Retrieved tools from stdio MCP", {
-        package_id: this.packageId,
-        tool_count: response.tools?.length || 0,
-      });
+    return this.requestQueue.add(async () => {
+      try {
+        const response = await this.client.listTools();
+        
+        logger.debug("Retrieved tools from stdio MCP", {
+          package_id: this.packageId,
+          tool_count: response.tools?.length || 0,
+        });
 
-      return response.tools || [];
-    } catch (error) {
-      logger.error("Failed to list tools from stdio MCP", {
-        package_id: this.packageId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+        return response.tools || [];
+      } catch (error) {
+        logger.error("Failed to list tools from stdio MCP", {
+          package_id: this.packageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }) as Promise<any[]>;
   }
 
   async callTool(name: string, args: any): Promise<any> {
@@ -146,41 +162,50 @@ export class StdioMcpClient implements McpClient {
       tool_name: name,
       args_keys: typeof args === "object" && args ? Object.keys(args) : [],
       timeout_ms: timeout,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
     });
 
-    try {
-      const response = await this.client.callTool({
-        name,
-        arguments: args || {},
-      }, undefined, {
-        timeout,
-        resetTimeoutOnProgress: true, // Reset timeout when progress notifications are received
-      });
+    return this.requestQueue.add(async () => {
+      try {
+        const response = await this.client.callTool({
+          name,
+          arguments: args || {},
+        }, undefined, {
+          timeout,
+          resetTimeoutOnProgress: true, // Reset timeout when progress notifications are received
+        });
 
-      logger.debug("Tool call completed", {
-        package_id: this.packageId,
-        tool_name: name,
-        has_content: !!(response && response.content),
-      });
+        logger.debug("Tool call completed", {
+          package_id: this.packageId,
+          tool_name: name,
+          has_content: !!(response && response.content),
+        });
 
-      // MCP client returns { content: [...] } directly
-      return response;
-    } catch (error) {
-      logger.error("Tool call failed", {
-        package_id: this.packageId,
-        tool_name: name,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+        // MCP client returns { content: [...] } directly
+        return response;
+      } catch (error) {
+        logger.error("Tool call failed", {
+          package_id: this.packageId,
+          tool_name: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
   }
 
   async close(): Promise<void> {
     logger.debug("Closing stdio MCP client", {
       package_id: this.packageId,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
     });
 
     try {
+      // Clear any pending requests in the queue
+      this.requestQueue.clear();
+      
       await this.client.close();
       
       // Also clean up the process if it exists

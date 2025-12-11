@@ -53,7 +53,8 @@
     "ajv-formats": "^3.0.1",
     "chokidar": "^5.0.0",
     "express": "^5.1.0",
-    "keytar": "^7.9.0"
+    "keytar": "^7.9.0",
+    "p-queue": "^9.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

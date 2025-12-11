@@ -2,11 +2,17 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import PQueue from "p-queue";
 import { McpClient, PackageConfig } from "../types.js";
 import { getLogger } from "../logging.js";
 import { SimpleOAuthProvider, RefreshOnlyOAuthProvider } from "../auth/providers/index.js";
 
 const logger = getLogger();
+
+// HTTP transport can handle more concurrent requests than STDIO, but we still
+// limit concurrency to prevent overwhelming upstream servers and to provide
+// fair scheduling when multiple agents share the same MCP connection
+const HTTP_CONCURRENCY = 5;
 
 export interface HttpMcpClientOptions {
   oauthPort?: number;
@@ -21,11 +27,15 @@ export class HttpMcpClient implements McpClient {
   private useOAuth: boolean = false;
   private oauthProvider?: OAuthClientProvider;
   private oauthPort: number;
+  private requestQueue: PQueue;
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
     this.packageId = packageId;
     this.config = config;
     this.oauthPort = options?.oauthPort ?? 5173;
+    
+    // Request queue to limit concurrent calls to this HTTP client
+    this.requestQueue = new PQueue({ concurrency: HTTP_CONCURRENCY });
     
     this.client = new Client(
       { name: "super-mcp-router", version: "0.1.0" },
@@ -161,16 +171,24 @@ export class HttpMcpClient implements McpClient {
       throw new Error(`Package '${this.packageId}' is not connected`);
     }
 
-    try {
-      const response = await this.client.listTools();
-      return response.tools || [];
-    } catch (error) {
-      logger.error("Failed to list tools", {
-        package_id: this.packageId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+    logger.debug("Listing tools from HTTP MCP", {
+      package_id: this.packageId,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
+    });
+
+    return this.requestQueue.add(async () => {
+      try {
+        const response = await this.client.listTools();
+        return response.tools || [];
+      } catch (error) {
+        logger.error("Failed to list tools", {
+          package_id: this.packageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }) as Promise<any[]>;
   }
 
   async callTool(name: string, args: any): Promise<any> {
@@ -185,29 +203,42 @@ export class HttpMcpClient implements McpClient {
       package_id: this.packageId,
       tool_name: name,
       timeout_ms: timeout,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
     });
 
-    try {
-      const response = await this.client.callTool({
-        name,
-        arguments: args || {},
-      }, undefined, {
-        timeout,
-        resetTimeoutOnProgress: true,
-      });
-      return response;
-    } catch (error) {
-      logger.error("Tool call failed", {
-        package_id: this.packageId,
-        tool_name: name,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      throw error;
-    }
+    return this.requestQueue.add(async () => {
+      try {
+        const response = await this.client.callTool({
+          name,
+          arguments: args || {},
+        }, undefined, {
+          timeout,
+          resetTimeoutOnProgress: true,
+        });
+        return response;
+      } catch (error) {
+        logger.error("Tool call failed", {
+          package_id: this.packageId,
+          tool_name: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
   }
 
   async close(): Promise<void> {
+    logger.debug("Closing HTTP MCP client", {
+      package_id: this.packageId,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
+    });
+
     try {
+      // Clear any pending requests in the queue
+      this.requestQueue.clear();
+      
       await this.client.close();
       this.isConnected = false;
     } catch (error) {
