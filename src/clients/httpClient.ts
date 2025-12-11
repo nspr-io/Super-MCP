@@ -37,6 +37,11 @@ export class HttpMcpClient implements McpClient {
     // Request queue to limit concurrent calls to this HTTP client
     this.requestQueue = new PQueue({ concurrency: HTTP_CONCURRENCY });
     
+    logger.info("Created HTTP MCP client with request queue", {
+      package_id: packageId,
+      queue_concurrency: HTTP_CONCURRENCY,
+    });
+    
     this.client = new Client(
       { name: "super-mcp-router", version: "0.1.0" },
       { capabilities: {} }
@@ -171,7 +176,7 @@ export class HttpMcpClient implements McpClient {
       throw new Error(`Package '${this.packageId}' is not connected`);
     }
 
-    logger.debug("Listing tools from HTTP MCP", {
+    logger.info("Listing tools from HTTP MCP", {
       package_id: this.packageId,
       queue_size: this.requestQueue.size,
       queue_pending: this.requestQueue.pending,
@@ -199,7 +204,7 @@ export class HttpMcpClient implements McpClient {
     const timeout = this.config.timeout ||
                     parseInt(process.env.SUPER_MCP_TOOL_TIMEOUT || '300000');
 
-    logger.debug("Calling tool on HTTP MCP", {
+    logger.info("Calling tool on HTTP MCP", {
       package_id: this.packageId,
       tool_name: name,
       timeout_ms: timeout,
@@ -229,7 +234,7 @@ export class HttpMcpClient implements McpClient {
   }
 
   async close(): Promise<void> {
-    logger.debug("Closing HTTP MCP client", {
+    logger.info("Closing HTTP MCP client", {
       package_id: this.packageId,
       queue_size: this.requestQueue.size,
       queue_pending: this.requestQueue.pending,

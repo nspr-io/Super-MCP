@@ -29,6 +29,11 @@ export class StdioMcpClient implements McpClient {
     // Request queue to serialize concurrent calls to this STDIO client
     this.requestQueue = new PQueue({ concurrency: STDIO_CONCURRENCY });
     
+    logger.info("Created STDIO MCP client with request queue", {
+      package_id: packageId,
+      queue_concurrency: STDIO_CONCURRENCY,
+    });
+    
     // We'll initialize the client and transport in connect()
     this.client = new Client(
       { name: "super-mcp-router", version: "0.1.0" },
@@ -126,7 +131,7 @@ export class StdioMcpClient implements McpClient {
   }
 
   async listTools(): Promise<any[]> {
-    logger.debug("Listing tools from stdio MCP", {
+    logger.info("Listing tools from stdio MCP", {
       package_id: this.packageId,
       queue_size: this.requestQueue.size,
       queue_pending: this.requestQueue.pending,
@@ -136,7 +141,7 @@ export class StdioMcpClient implements McpClient {
       try {
         const response = await this.client.listTools();
         
-        logger.debug("Retrieved tools from stdio MCP", {
+        logger.info("Retrieved tools from stdio MCP", {
           package_id: this.packageId,
           tool_count: response.tools?.length || 0,
         });
@@ -157,7 +162,7 @@ export class StdioMcpClient implements McpClient {
     const timeout = this.config.timeout ||
                     parseInt(process.env.SUPER_MCP_TOOL_TIMEOUT || '300000');
 
-    logger.debug("Calling tool on stdio MCP", {
+    logger.info("Calling tool on stdio MCP", {
       package_id: this.packageId,
       tool_name: name,
       args_keys: typeof args === "object" && args ? Object.keys(args) : [],
@@ -176,7 +181,7 @@ export class StdioMcpClient implements McpClient {
           resetTimeoutOnProgress: true, // Reset timeout when progress notifications are received
         });
 
-        logger.debug("Tool call completed", {
+        logger.info("Tool call completed", {
           package_id: this.packageId,
           tool_name: name,
           has_content: !!(response && response.content),
@@ -196,7 +201,7 @@ export class StdioMcpClient implements McpClient {
   }
 
   async close(): Promise<void> {
-    logger.debug("Closing stdio MCP client", {
+    logger.info("Closing stdio MCP client", {
       package_id: this.packageId,
       queue_size: this.requestQueue.size,
       queue_pending: this.requestQueue.pending,
@@ -213,7 +218,7 @@ export class StdioMcpClient implements McpClient {
         this.process.kill();
       }
 
-      logger.debug("Stdio MCP client closed", {
+      logger.info("Stdio MCP client closed", {
         package_id: this.packageId,
       });
     } catch (error) {
