@@ -62,7 +62,8 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   
   get clientMetadata() {
     return {
-      name: "super-mcp-router", 
+      client_name: "super-mcp-router",  // RFC 7591 standard
+      name: "super-mcp-router",         // Fallback for non-compliant servers
       description: "MCP Router for aggregating multiple MCP servers",
       redirect_uris: [`http://localhost:${this.oauthPort}/oauth/callback`]
     };
