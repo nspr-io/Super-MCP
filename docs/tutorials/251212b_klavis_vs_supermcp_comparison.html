@@ -1,0 +1,854 @@
+<!doctype html>
+<html lang="en">
+
+<!--
+    TUTORIAL REQUEST
+    
+    User prompt: "Do a bunch of web research on how Klavis handles this kind of context-efficient progressive disclosure of MCP tools. Then write a detailed technical appendix comparing Klavis's approach to SuperMCP's."
+    
+    Generated: 2024-12-12
+    Audience: Developers evaluating MCP aggregation strategies for AI agent tooling
+    Complexity: complex
+    
+    Source files analyzed:
+    - super-mcp/src/server.ts - SuperMCP meta-tool definitions
+    - super-mcp/src/catalog.ts - SuperMCP caching and pagination
+    - super-mcp/src/summarize.ts - SuperMCP summarization
+    - Klavis Strata MCP API (via tool introspection and web research)
+    
+    Related resources:
+    - https://www.klavis.ai/blog/strata-mcpmark-analysis - Klavis benchmark results
+    - https://www.klavis.ai/blog/introducing-strata-one-mcp-server-for-thousands-of-tools - Strata introduction
+    - docs/tutorials/251212a_super_mcp_progressive_disclosure.html - SuperMCP tutorial
+    - https://mcpmark.ai/ - MCPMark benchmark suite
+-->
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Technical comparison of Klavis Strata MCP vs SuperMCP progressive disclosure architectures for managing large-scale MCP tool aggregation without context overload." />
+    <title>Appendix: Klavis Strata vs SuperMCP — Progressive Tool Disclosure Comparison</title>
+
+    <!-- Highlight.js for syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+
+    <style>
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            line-height: 1.6;
+            padding: 2rem;
+            max-width: 1100px;
+            margin: auto;
+            color: #1e293b;
+        }
+
+        h1, h2, h3, h4 {
+            line-height: 1.25;
+            margin-top: 2rem;
+        }
+
+        h1 { border-bottom: 3px solid #7c3aed; padding-bottom: 0.5rem; }
+        h2 { border-bottom: 1px solid #cbd5e1; padding-bottom: 0.3rem; }
+
+        code, pre {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        pre {
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow: auto;
+            margin: 1rem 0;
+        }
+
+        code:not(pre code) {
+            background: #f1f5f9;
+            color: #0f172a;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        a { color: #7c3aed; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        .callout {
+            background: #f8fafc;
+            border-left: 4px solid #7c3aed;
+            padding: 1rem 1.25rem;
+            margin: 1.5rem 0;
+            border-radius: 4px;
+        }
+
+        .callout.mental-model {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+        }
+
+        .callout.klavis {
+            background: #ede9fe;
+            border-left: 4px solid #7c3aed;
+        }
+
+        .callout.supermcp {
+            background: #dbeafe;
+            border-left: 4px solid #2563eb;
+        }
+
+        .callout.tip {
+            background: #dcfce7;
+            border-left: 4px solid #16a34a;
+        }
+
+        .callout.warning {
+            background: #fee2e2;
+            border-left: 4px solid #dc2626;
+        }
+
+        .callout h3, .callout h4 {
+            margin-top: 0;
+            margin-bottom: 0.5rem;
+        }
+
+        .small {
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+
+        ul.toc {
+            list-style: none;
+            padding-left: 0;
+            background: #f8fafc;
+            padding: 1rem;
+            border-radius: 6px;
+        }
+
+        ul.toc>li { margin: 0.5rem 0; }
+        ul.toc ul { padding-left: 1.5rem; margin-top: 0.25rem; }
+
+        details {
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+
+        details summary {
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+            color: #1e40af;
+            padding: 0.25rem;
+        }
+
+        details summary:hover { color: #1e3a8a; }
+
+        details[open] summary {
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #cbd5e1;
+            padding-bottom: 0.5rem;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 1rem 0;
+            font-size: 0.95rem;
+        }
+
+        th, td {
+            border: 1px solid #cbd5e1;
+            padding: 0.75rem;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th { background: #f1f5f9; font-weight: 600; }
+        tr:nth-child(even) { background: #fafafa; }
+
+        .comparison-row td:first-child { font-weight: 600; width: 20%; }
+        .comparison-row td:nth-child(2) { background: #ede9fe; } /* Klavis purple */
+        .comparison-row td:nth-child(3) { background: #dbeafe; } /* SuperMCP blue */
+
+        .badge {
+            display: inline-block;
+            padding: 0.2em 0.5em;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+        .badge.klavis { background: #7c3aed; color: white; }
+        .badge.supermcp { background: #2563eb; color: white; }
+        .badge.both { background: #059669; color: white; }
+
+        .flow-diagram {
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            font-family: ui-monospace, SFMono-Regular, monospace;
+            font-size: 0.9rem;
+            line-height: 1.4;
+            overflow-x: auto;
+        }
+
+        @media (max-width: 768px) {
+            body { padding: 1rem; }
+            pre { font-size: 0.85em; }
+            table { font-size: 0.85rem; }
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Appendix: Klavis Strata vs SuperMCP</h1>
+    <p class="small">
+        <strong>Technical Comparison of Progressive Tool Disclosure Architectures</strong><br>
+        <strong>Audience</strong>: Developers evaluating MCP aggregation strategies<br>
+        <strong>Reading time</strong>: 15 minutes<br>
+        <strong>Prerequisites</strong>: Read <a href="251212a_super_mcp_progressive_disclosure.html">SuperMCP Progressive Disclosure Tutorial</a>
+    </p>
+
+    <!-- TL;DR -->
+    <div class="callout">
+        <strong>TL;DR</strong>: Both Klavis Strata and SuperMCP solve the "1000 tools in context" problem via progressive disclosure, but with different philosophies. <strong>Strata</strong> uses a 4-stage intent-driven hierarchy (server → category → action → execute) with explicit output field filtering. <strong>SuperMCP</strong> uses a 3-tier package-centric pattern (packages → tools → execute) with pagination and summaries. Strata has published benchmark wins (+15% pass@1, -24% tokens on GitHub tasks). SuperMCP is simpler to self-host and gives more control over schema exposure.
+    </div>
+
+    <!-- TABLE OF CONTENTS -->
+    <h2>Table of Contents</h2>
+    <ul class="toc">
+        <li><a href="#overview">Executive Overview</a></li>
+        <li><a href="#architecture">Architecture Comparison</a>
+            <ul>
+                <li><a href="#klavis-flow">Klavis Strata: 4-Stage Intent-Driven Flow</a></li>
+                <li><a href="#supermcp-flow">SuperMCP: 3-Tier Package-Centric Flow</a></li>
+            </ul>
+        </li>
+        <li><a href="#api-comparison">API Surface Comparison</a></li>
+        <li><a href="#context-techniques">Context-Saving Techniques</a></li>
+        <li><a href="#benchmarks">Benchmark Results</a></li>
+        <li><a href="#tradeoffs">Trade-offs and Use Cases</a></li>
+        <li><a href="#integration">Using Both Together</a></li>
+        <li><a href="#references">References</a></li>
+    </ul>
+
+    <!-- EXECUTIVE OVERVIEW -->
+    <h2 id="overview">Executive Overview</h2>
+    
+    <p>When aggregating dozens of MCP servers (70+ in enterprise setups like Klavis), naively exposing all tools to the AI creates massive context overhead. Both Klavis's <strong>Strata MCP</strong> and <strong>SuperMCP</strong> address this with progressive disclosure—but their approaches differ significantly:</p>
+
+    <table class="comparison-row">
+        <tr>
+            <th>Aspect</th>
+            <th><span class="badge klavis">Klavis Strata</span></th>
+            <th><span class="badge supermcp">SuperMCP</span></th>
+        </tr>
+        <tr>
+            <td>Philosophy</td>
+            <td><strong>Intent-driven navigation</strong>: Guide the AI through categories based on what it's trying to accomplish</td>
+            <td><strong>Package-centric browsing</strong>: Let the AI explore tool packages at its own pace</td>
+        </tr>
+        <tr>
+            <td>Disclosure Stages</td>
+            <td>4 stages: Server → Category → Action Details → Execute</td>
+            <td>3 tiers: Packages → Tools → Execute</td>
+        </tr>
+        <tr>
+            <td>Primary Host</td>
+            <td>Klavis-hosted cloud service with 70+ integrations</td>
+            <td>Self-hosted router (npm package)</td>
+        </tr>
+        <tr>
+            <td>Output Control</td>
+            <td><code>include_output_fields</code> to select specific response fields</td>
+            <td><code>max_output_chars</code> to truncate large outputs</td>
+        </tr>
+        <tr>
+            <td>Fallback Search</td>
+            <td><code>search_documentation</code> with BM25 indexing</td>
+            <td><code>get_help</code> for usage guidance (no semantic search)</td>
+        </tr>
+    </table>
+
+    <!-- ARCHITECTURE COMPARISON -->
+    <h2 id="architecture">Architecture Comparison</h2>
+
+    <h3 id="klavis-flow">Klavis Strata: 4-Stage Intent-Driven Flow</h3>
+
+    <div class="callout klavis">
+        <h4>Strata's Mental Model</h4>
+        <p>Strata treats tool discovery as <strong>hierarchical navigation based on user intent</strong>. The AI identifies what it wants to accomplish, then progressively drills into the specific service, category, and action needed.</p>
+    </div>
+
+    <div class="flow-diagram">
+<strong>Stage 1: discover_server_categories_or_actions</strong>
+┌─────────────────────────────────────────────────────────────────────┐
+│ Input: user_query="I need to create a GitHub issue"                 │
+│        server_names=["github", "jira", "linear"]                    │
+│                                                                     │
+│ Output: {                                                           │
+│   "github": {                                                       │
+│     "detail_level": "categories_only",                              │
+│     "details": ["Issues", "Pull Requests", "Repositories", ...]    │
+│   }                                                                 │
+│ }                                                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                              ↓
+<strong>Stage 2: get_category_actions</strong>
+┌─────────────────────────────────────────────────────────────────────┐
+│ Input: category_names=["github - Issues"]                           │
+│                                                                     │
+│ Output: [                                                           │
+│   { "action": "create_issue", "description": "Create new issue..." }│
+│   { "action": "list_issues", "description": "List repository..." } │
+│   { "action": "update_issue", "description": "Update existing..." } │
+│ ]                                                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                              ↓
+<strong>Stage 3: get_action_details</strong>
+┌─────────────────────────────────────────────────────────────────────┐
+│ Input: category_name="github - Issues", action_name="create_issue"  │
+│                                                                     │
+│ Output: {                                                           │
+│   "action": "create_issue",                                         │
+│   "required_params": ["owner", "repo", "title"],                    │
+│   "optional_params": ["body", "labels", "assignees"],               │
+│   "response_schema": { ... full schema ... }                        │
+│ }                                                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                              ↓
+<strong>Stage 4: execute_action</strong>
+┌─────────────────────────────────────────────────────────────────────┐
+│ Input: server_name="github",                                        │
+│        category_name="github - Issues",                             │
+│        action_name="create_issue",                                  │
+│        path_params='{"owner":"org","repo":"repo"}',                 │
+│        body_schema='{"title":"Bug","body":"..."}',                  │
+│        include_output_fields=["number", "html_url", "state"]        │
+│                                                                     │
+│ Output: { "number": 42, "html_url": "...", "state": "open" }        │
+└─────────────────────────────────────────────────────────────────────┘
+    </div>
+
+    <details>
+        <summary>Key Strata API Parameters</summary>
+        <table>
+            <tr><th>Parameter</th><th>Tool</th><th>Purpose</th></tr>
+            <tr>
+                <td><code>user_query</code></td>
+                <td>discover_server_categories</td>
+                <td>Natural language intent for smart category suggestions</td>
+            </tr>
+            <tr>
+                <td><code>server_names</code></td>
+                <td>discover_server_categories</td>
+                <td>Filter to only user-enabled integrations</td>
+            </tr>
+            <tr>
+                <td><code>include_output_fields</code></td>
+                <td>execute_action</td>
+                <td>Array of field paths to include in response (e.g., <code>["author.displayName"]</code>). Only these fields are returned.</td>
+            </tr>
+            <tr>
+                <td><code>maximum_output_characters</code></td>
+                <td>execute_action</td>
+                <td>Truncate response if it exceeds limit</td>
+            </tr>
+            <tr>
+                <td><code>path_params</code> / <code>query_params</code> / <code>body_schema</code></td>
+                <td>execute_action</td>
+                <td>Structured separation of REST-style parameters</td>
+            </tr>
+        </table>
+    </details>
+
+    <h3 id="supermcp-flow">SuperMCP: 3-Tier Package-Centric Flow</h3>
+
+    <div class="callout supermcp">
+        <h4>SuperMCP's Mental Model</h4>
+        <p>SuperMCP treats tool discovery as <strong>browsing a catalog</strong>. The AI explores packages (collections of related tools), then drills into specific tools. It's less guided than Strata but offers more flexibility.</p>
+    </div>
+
+    <div class="flow-diagram">
+<strong>Tier 1: list_tool_packages</strong>
+┌─────────────────────────────────────────────────────────────────────┐
+│ Input: { safe_only: true, include_health: true }                    │
+│                                                                     │
+│ Output: {                                                           │
+│   "packages": [                                                     │
+│     { "package_id": "github", "tool_count": 25,                     │
+│       "summary": "Local MCP with 25 tools. GitHub repository...",   │
+│       "health": "healthy" },                                        │
+│     { "package_id": "filesystem", "tool_count": 8, ... }            │
+│   ]                                                                 │
+│ }                                                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                              ↓
+<strong>Tier 2: list_tools</strong>
+┌─────────────────────────────────────────────────────────────────────┐
+│ Input: { package_id: "github", summarize: true, page_size: 10 }     │
+│                                                                     │
+│ Output: {                                                           │
+│   "tools": [                                                        │
+│     { "tool_id": "github__create_issue",                            │
+│       "summary": "Create a new issue in a repository",              │
+│       "args_skeleton": { "owner": "<string>", "repo": "<string>",   │
+│                          "title": "<string>", "body": "<string>" }, │
+│       "schema_hash": "sha256:a3f2b1c9" },                           │
+│     ...                                                             │
+│   ],                                                                │
+│   "next_page_token": "eyJpbmRleCI6MTB9"                             │
+│ }                                                                   │
+└─────────────────────────────────────────────────────────────────────┘
+                              ↓
+<strong>Tier 3: use_tool</strong>
+┌─────────────────────────────────────────────────────────────────────┐
+│ Input: { package_id: "github",                                      │
+│          tool_id: "create_issue",                                   │
+│          args: { owner: "org", repo: "repo", title: "Bug" },        │
+│          max_output_chars: 5000 }                                   │
+│                                                                     │
+│ Output: { "number": 42, "html_url": "...", ... }                    │
+└─────────────────────────────────────────────────────────────────────┘
+    </div>
+
+    <details>
+        <summary>Key SuperMCP API Parameters</summary>
+        <table>
+            <tr><th>Parameter</th><th>Tool</th><th>Purpose</th></tr>
+            <tr>
+                <td><code>summarize</code></td>
+                <td>list_tools</td>
+                <td>Include short descriptions + arg skeletons (default: true)</td>
+            </tr>
+            <tr>
+                <td><code>include_schemas</code></td>
+                <td>list_tools</td>
+                <td>Include full JSON Schema (default: false, verbose)</td>
+            </tr>
+            <tr>
+                <td><code>page_size</code> / <code>page_token</code></td>
+                <td>list_tools</td>
+                <td>Pagination for large tool sets</td>
+            </tr>
+            <tr>
+                <td><code>max_output_chars</code></td>
+                <td>use_tool</td>
+                <td>Truncate output if larger than limit</td>
+            </tr>
+            <tr>
+                <td><code>dry_run</code></td>
+                <td>use_tool</td>
+                <td>Validate arguments without executing</td>
+            </tr>
+        </table>
+    </details>
+
+    <!-- API COMPARISON -->
+    <h2 id="api-comparison">API Surface Comparison</h2>
+
+    <table>
+        <tr>
+            <th>Capability</th>
+            <th><span class="badge klavis">Strata</span></th>
+            <th><span class="badge supermcp">SuperMCP</span></th>
+        </tr>
+        <tr>
+            <td><strong>Discovery entry point</strong></td>
+            <td><code>discover_server_categories_or_actions(user_query, server_names)</code></td>
+            <td><code>list_tool_packages(safe_only, include_health)</code></td>
+        </tr>
+        <tr>
+            <td><strong>Category/package exploration</strong></td>
+            <td><code>get_category_actions(category_names)</code></td>
+            <td><code>list_tools(package_id, summarize, page_size)</code></td>
+        </tr>
+        <tr>
+            <td><strong>Full schema retrieval</strong></td>
+            <td><code>get_action_details(category_name, action_name)</code></td>
+            <td><code>list_tools(package_id, include_schemas=true)</code></td>
+        </tr>
+        <tr>
+            <td><strong>Execution</strong></td>
+            <td><code>execute_action(server_name, category_name, action_name, body_schema, ...)</code></td>
+            <td><code>use_tool(package_id, tool_id, args, max_output_chars)</code></td>
+        </tr>
+        <tr>
+            <td><strong>Fallback search</strong></td>
+            <td><code>search_documentation(query, server_name)</code> — BM25 keyword matching</td>
+            <td><code>get_help(topic, package_id)</code> — structured help topics</td>
+        </tr>
+        <tr>
+            <td><strong>Authentication handling</strong></td>
+            <td><code>handle_auth_failure(server_name, intention)</code> — OAuth flow management</td>
+            <td><code>authenticate(package_id)</code> — browser-based OAuth</td>
+        </tr>
+        <tr>
+            <td><strong>Health monitoring</strong></td>
+            <td>Implicit in discovery (shows auth status)</td>
+            <td><code>health_check_all(detailed)</code> — explicit health probe</td>
+        </tr>
+    </table>
+
+    <!-- CONTEXT-SAVING TECHNIQUES -->
+    <h2 id="context-techniques">Context-Saving Techniques</h2>
+
+    <h3>Technique Comparison Matrix</h3>
+
+    <table class="comparison-row">
+        <tr>
+            <th>Technique</th>
+            <th><span class="badge klavis">Klavis Strata</span></th>
+            <th><span class="badge supermcp">SuperMCP</span></th>
+        </tr>
+        <tr>
+            <td><strong>Progressive schema disclosure</strong></td>
+            <td>✅ Schemas only revealed at <code>get_action_details</code> stage</td>
+            <td>✅ Schemas only with <code>include_schemas=true</code></td>
+        </tr>
+        <tr>
+            <td><strong>Tool summaries</strong></td>
+            <td>✅ Brief descriptions at <code>get_category_actions</code></td>
+            <td>✅ Summaries + arg skeletons by default</td>
+        </tr>
+        <tr>
+            <td><strong>Pagination</strong></td>
+            <td>⚠️ Not explicit; relies on category-level chunking</td>
+            <td>✅ Explicit <code>page_size</code> + <code>page_token</code></td>
+        </tr>
+        <tr>
+            <td><strong>Output field selection</strong></td>
+            <td>✅ <code>include_output_fields</code> — select specific response fields</td>
+            <td>❌ Not supported; only truncation</td>
+        </tr>
+        <tr>
+            <td><strong>Output truncation</strong></td>
+            <td>✅ <code>maximum_output_characters</code></td>
+            <td>✅ <code>max_output_chars</code></td>
+        </tr>
+        <tr>
+            <td><strong>Lazy loading</strong></td>
+            <td>✅ User-enabled integrations only (pre-filtered)</td>
+            <td>✅ Package tools loaded on first access</td>
+        </tr>
+        <tr>
+            <td><strong>Caching with ETags</strong></td>
+            <td>⚠️ Not documented</td>
+            <td>✅ Per-package and global ETags</td>
+        </tr>
+        <tr>
+            <td><strong>Schema hashes</strong></td>
+            <td>❌ Not documented</td>
+            <td>✅ <code>schema_hash</code> for change detection</td>
+        </tr>
+        <tr>
+            <td><strong>Intent-based filtering</strong></td>
+            <td>✅ <code>user_query</code> parameter for smart category suggestions</td>
+            <td>❌ No natural language filtering</td>
+        </tr>
+        <tr>
+            <td><strong>BM25 documentation search</strong></td>
+            <td>✅ <code>search_documentation</code> with pre-cached indices</td>
+            <td>❌ Not supported</td>
+        </tr>
+    </table>
+
+    <h3>Notable Differences in Detail</h3>
+
+    <details>
+        <summary>Output Field Selection (Strata's Unique Feature)</summary>
+        <p>Klavis's <code>include_output_fields</code> parameter is particularly powerful for context management. Instead of returning the full API response, you can specify exactly which fields you need:</p>
+        <pre><code class="language-javascript">// Strata: Only get the fields you need
+execute_action({
+  server_name: "github",
+  action_name: "list_issues",
+  include_output_fields: ["number", "title", "state", "assignee.login"]
+  // Returns: [{ number: 1, title: "Bug", state: "open", assignee: { login: "user" } }]
+  // Instead of: Full issue objects with 50+ fields each
+})</code></pre>
+        <p>SuperMCP only offers <code>max_output_chars</code> which truncates arbitrarily, potentially cutting off structured data mid-field.</p>
+    </details>
+
+    <details>
+        <summary>Search Documentation (Strata's Fallback Mechanism)</summary>
+        <p>When the AI can't find the right action through the hierarchy, Strata provides <code>search_documentation</code> with BM25 keyword matching against pre-cached indices:</p>
+        <pre><code class="language-javascript">// Strata: Search when you're not sure which category
+search_documentation({
+  query: "create webhook",
+  server_name: "github",
+  max_results: 5
+})
+// Returns ranked endpoints matching "create webhook"</code></pre>
+        <p>SuperMCP's <code>get_help</code> tool provides structured guidance but doesn't support semantic or keyword search across tool documentation.</p>
+    </details>
+
+    <details>
+        <summary>Pagination (SuperMCP's Explicit Control)</summary>
+        <p>SuperMCP provides explicit pagination that Strata handles implicitly through category structure:</p>
+        <pre><code class="language-javascript">// SuperMCP: Explicit pagination for large packages
+list_tools({
+  package_id: "salesforce",
+  page_size: 10,
+  page_token: "eyJpbmRleCI6MTB9"  // From previous response
+})
+// Returns tools 11-20, with next_page_token if more exist</code></pre>
+        <p>This is valuable for packages with many tools (Salesforce can have 100+ tools). Strata's category structure provides implicit chunking but doesn't offer explicit page control.</p>
+    </details>
+
+    <!-- BENCHMARKS -->
+    <h2 id="benchmarks">Benchmark Results</h2>
+
+    <div class="callout tip">
+        <h4>Source</h4>
+        <p>These results come from <a href="https://www.klavis.ai/blog/strata-mcpmark-analysis">Klavis's MCPMark analysis</a> comparing Strata MCP against official GitHub and Notion MCP servers using the <a href="https://mcpmark.ai/">MCPMark benchmark suite</a>. Note: This is Klavis's own published benchmark; independent verification is recommended.</p>
+    </div>
+
+    <h3>GitHub Tasks (23 tasks)</h3>
+    <table>
+        <tr>
+            <th>Metric</th>
+            <th>Strata MCP</th>
+            <th>Official GitHub MCP</th>
+            <th>Delta</th>
+        </tr>
+        <tr>
+            <td>pass@1 (single-run success)</td>
+            <td>31.5%</td>
+            <td>16.3%</td>
+            <td><strong>+15.2 pts</strong> (+93% relative)</td>
+        </tr>
+        <tr>
+            <td>pass@4 (at least 1 of 4 succeeds)</td>
+            <td>39.1%</td>
+            <td>30.4%</td>
+            <td>+8.7 pts</td>
+        </tr>
+        <tr>
+            <td>Pass^4 (all 4 runs succeed)</td>
+            <td>21.7%</td>
+            <td>8.7%</td>
+            <td><strong>2.5× higher</strong></td>
+        </tr>
+        <tr>
+            <td>Avg tokens per task</td>
+            <td>533,385</td>
+            <td>701,252</td>
+            <td><strong>−24%</strong></td>
+        </tr>
+        <tr>
+            <td>Cost per run</td>
+            <td>$39.55</td>
+            <td>$49.61</td>
+            <td>−20%</td>
+        </tr>
+    </table>
+
+    <h3>Notion Tasks (28 tasks)</h3>
+    <table>
+        <tr>
+            <th>Metric</th>
+            <th>Strata MCP</th>
+            <th>Official Notion MCP</th>
+            <th>Delta</th>
+        </tr>
+        <tr>
+            <td>pass@1</td>
+            <td>34.8%</td>
+            <td>21.4%</td>
+            <td><strong>+13.4 pts</strong> (+63% relative)</td>
+        </tr>
+        <tr>
+            <td>pass@4</td>
+            <td>50.0%</td>
+            <td>39.3%</td>
+            <td>+10.7 pts</td>
+        </tr>
+        <tr>
+            <td>Pass^4</td>
+            <td>25.0%</td>
+            <td>7.1%</td>
+            <td><strong>3.5× higher</strong></td>
+        </tr>
+        <tr>
+            <td>Avg tokens per task</td>
+            <td>424,474</td>
+            <td>650,879</td>
+            <td><strong>−35%</strong></td>
+        </tr>
+        <tr>
+            <td>Cost per run</td>
+            <td>$37.83</td>
+            <td>$56.10</td>
+            <td>−33%</td>
+        </tr>
+    </table>
+
+    <h3>Why Strata Outperformed</h3>
+    <p>According to <a href="https://www.klavis.ai/blog/strata-mcpmark-analysis">Klavis's analysis</a>, the key factors were:</p>
+    <ol>
+        <li><strong>Lean context</strong>: Never dumping full tool descriptions; revealing only what's needed at each step</li>
+        <li><strong>Precise tool targeting</strong>: Structured narrowing (service → category → action) shrinks the decision surface</li>
+        <li><strong>Just-in-time recovery</strong>: <code>search_documentation</code> helps resolve ambiguity instead of guessing</li>
+        <li><strong>Full coverage at scale</strong>: No artificial 40-50 tool cap; scales to thousands via gated discovery</li>
+    </ol>
+
+    <div class="callout warning">
+        <h4>No Published SuperMCP Benchmarks</h4>
+        <p>SuperMCP does not have published MCPMark benchmark results. The architectural comparison suggests similar benefits from progressive disclosure, but direct performance comparison would require running equivalent benchmarks.</p>
+    </div>
+
+    <!-- TRADEOFFS -->
+    <h2 id="tradeoffs">Trade-offs and Use Cases</h2>
+
+    <h3>When to Use Klavis Strata</h3>
+    <div class="callout klavis">
+        <ul>
+            <li><strong>Enterprise SaaS integrations</strong>: 70+ pre-built integrations (GitHub, Notion, Slack, Salesforce, etc.)</li>
+            <li><strong>Output-sensitive tasks</strong>: When you need <code>include_output_fields</code> to precisely control response shape</li>
+            <li><strong>Discovery-heavy workflows</strong>: BM25 <code>search_documentation</code> helps when you don't know the exact action name</li>
+            <li><strong>OAuth-heavy environments</strong>: Built-in <code>handle_auth_failure</code> flow management</li>
+            <li><strong>Managed hosting preferred</strong>: Klavis handles the infrastructure</li>
+        </ul>
+    </div>
+
+    <h3>When to Use SuperMCP</h3>
+    <div class="callout supermcp">
+        <ul>
+            <li><strong>Self-hosted environments</strong>: Full control over the router, no cloud dependency</li>
+            <li><strong>Custom MCP servers</strong>: Easy to add your own stdio/HTTP MCP servers</li>
+            <li><strong>Pagination-critical</strong>: Explicit page control for very large tool sets</li>
+            <li><strong>Schema hash tracking</strong>: Detect tool schema changes without re-fetching</li>
+            <li><strong>Security policy enforcement</strong>: Built-in allowlist/blocklist with hot reload</li>
+            <li><strong>Simple setup</strong>: Single <code>npx super-mcp-router</code> command</li>
+        </ul>
+    </div>
+
+    <h3>Feature Gap Analysis</h3>
+    <table>
+        <tr>
+            <th>Feature</th>
+            <th>Gap</th>
+        </tr>
+        <tr>
+            <td><span class="badge supermcp">SuperMCP</span> lacks <code>include_output_fields</code></td>
+            <td>Consider adding per-field response filtering to reduce context from tool outputs</td>
+        </tr>
+        <tr>
+            <td><span class="badge supermcp">SuperMCP</span> lacks semantic search</td>
+            <td>Consider adding BM25 or embedding-based tool search for discovery assistance</td>
+        </tr>
+        <tr>
+            <td><span class="badge klavis">Strata</span> lacks explicit pagination</td>
+            <td>Category structure provides implicit chunking; may not scale to 500+ actions per category</td>
+        </tr>
+        <tr>
+            <td><span class="badge klavis">Strata</span> lacks schema hashing</td>
+            <td>Could help avoid re-fetching unchanged schemas in long sessions</td>
+        </tr>
+    </table>
+
+    <!-- INTEGRATION -->
+    <h2 id="integration">Using Both Together</h2>
+
+    <p>Mindstone Rebel demonstrates that Strata and SuperMCP can coexist. The architecture:</p>
+
+    <pre><code class="language-text">┌─────────────────────────────────────────────────────────────────┐
+│                        Claude Agent SDK                         │
+└─────────────────────────────────────────────────────────────────┘
+           │                                    │
+           │                                    │
+           ▼                                    ▼
+┌─────────────────────┐              ┌─────────────────────┐
+│   Klavis Strata     │              │     SuperMCP        │
+│ (70+ cloud services)│              │  (local MCP router) │
+│                     │              │                     │
+│ • GitHub, Notion    │              │ • Filesystem        │
+│ • Slack, Gmail      │              │ • Custom MCPs       │
+│ • Salesforce, etc.  │              │ • Self-hosted tools │
+└─────────────────────┘              └─────────────────────┘</code></pre>
+
+    <p>In this setup:</p>
+    <ul>
+        <li><strong>Strata</strong> handles the cloud SaaS integrations with its managed OAuth and API coverage</li>
+        <li><strong>SuperMCP</strong> handles local filesystem access, git operations, and any custom MCP servers you've built</li>
+    </ul>
+
+    <div class="callout tip">
+        <h4>Configuration Example</h4>
+        <p>You would configure both in your MCP config, with Strata exposed as an HTTP MCP and SuperMCP either inline or as a separate router:</p>
+        <pre><code class="language-json">{
+  "mcpServers": {
+    "klavis-strata": {
+      "type": "http",
+      "url": "https://mcp.klavis.ai/your-tenant"
+    },
+    "super-mcp": {
+      "command": "npx",
+      "args": ["-y", "super-mcp-router@latest", "--config", "./local-mcps.json"]
+    }
+  }
+}</code></pre>
+    </div>
+
+    <!-- REFERENCES -->
+    <h2 id="references">References</h2>
+    <ul>
+        <li><strong>Klavis Documentation</strong>:
+            <ul>
+                <li><a href="https://www.klavis.ai/blog/strata-mcpmark-analysis">Strata MCP vs Official MCPs: MCPMark Benchmark Analysis</a></li>
+                <li><a href="https://www.klavis.ai/blog/introducing-strata-one-mcp-server-for-thousands-of-tools">Introducing Strata: One MCP Server for Thousands of Tools</a></li>
+                <li><a href="https://www.klavis.ai/docs/quickstart">Klavis Quickstart Documentation</a></li>
+            </ul>
+        </li>
+        <li><strong>SuperMCP</strong>:
+            <ul>
+                <li><a href="cursor://file//Users/greg/dev/gdconsult_work/mindstone/MindstoneRebel/super-mcp/README.md">SuperMCP README</a> (local)</li>
+                <li><a href="251212a_super_mcp_progressive_disclosure.html">SuperMCP Progressive Disclosure Tutorial</a></li>
+            </ul>
+        </li>
+        <li><strong>Benchmarks</strong>:
+            <ul>
+                <li><a href="https://mcpmark.ai/">MCPMark Benchmark Suite</a></li>
+            </ul>
+        </li>
+        <li><strong>MCP Specification</strong>:
+            <ul>
+                <li><a href="https://modelcontextprotocol.io/">Model Context Protocol Official Documentation</a></li>
+            </ul>
+        </li>
+    </ul>
+
+    <!-- SUMMARY -->
+    <div class="callout">
+        <h3>Summary</h3>
+        <p>Both Klavis Strata and SuperMCP effectively solve the context overload problem through progressive disclosure. Key differentiators:</p>
+        <table>
+            <tr>
+                <td><span class="badge klavis">Strata</span></td>
+                <td>4-stage intent-driven hierarchy, output field selection, BM25 search, 70+ managed integrations, published benchmark wins</td>
+            </tr>
+            <tr>
+                <td><span class="badge supermcp">SuperMCP</span></td>
+                <td>3-tier package-centric browsing, explicit pagination, schema hashing, self-hosted, security policies</td>
+            </tr>
+        </table>
+        <p>For most enterprise use cases, using <strong>both together</strong>—Strata for cloud SaaS, SuperMCP for local/custom tools—provides comprehensive coverage with optimal context efficiency.</p>
+    </div>
+
+    <!-- FOOTER -->
+    <hr />
+    <p class="small">
+        Last updated: 2024-12-12<br>
+        Part of the <a href="251212a_super_mcp_progressive_disclosure.html">SuperMCP Tutorial Series</a>
+    </p>
+
+</body>
+
+</html>
+

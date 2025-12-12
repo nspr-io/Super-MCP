@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+
+<!--
+    TUTORIAL REQUEST
+    
+    User prompt: "Can you explain how the SuperMCP works, esp re whether it does any progressive stuff to avoid context overload with large numbers of MCP servers and tools?"
+    
+    Generated: 2024-12-12
+    Audience: Developers familiar with MCP (Model Context Protocol) who want to understand SuperMCP's architecture
+    Complexity: medium
+    
+    Source files analyzed:
+    - super-mcp/src/server.ts - Main server entry point, meta-tool definitions
+    - super-mcp/src/catalog.ts - Tool caching, lazy loading, pagination
+    - super-mcp/src/summarize.ts - Tool summarization, arg skeletons
+    - super-mcp/src/handlers/listToolPackages.ts - Package listing handler
+    - super-mcp/src/handlers/listTools.ts - Tool listing with pagination
+    - super-mcp/README.md - Overview documentation
+    
+    Related resources:
+    - docs/project/MCP_CONFIGURATION.md - MCP configuration in Mindstone Rebel
+    - https://modelcontextprotocol.io/ - MCP specification
+-->
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description"
+        content="Deep dive into how SuperMCP Router aggregates multiple MCP servers while avoiding context overload through progressive disclosure, lazy loading, and intelligent summarization." />
+    <title>SuperMCP: Understanding Progressive Tool Discovery</title>
+
+    <!-- Highlight.js for syntax highlighting -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/a11y-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+
+    <style>
+        /* Base styling */
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            line-height: 1.6;
+            padding: 2rem;
+            max-width: 1000px;
+            margin: auto;
+            color: #1e293b;
+        }
+
+        h1,
+        h2,
+        h3,
+        h4 {
+            line-height: 1.25;
+            margin-top: 2rem;
+        }
+
+        h1 {
+            border-bottom: 3px solid #2563eb;
+            padding-bottom: 0.5rem;
+        }
+
+        h2 {
+            border-bottom: 1px solid #cbd5e1;
+            padding-bottom: 0.3rem;
+        }
+
+        /* Code and pre blocks */
+        code,
+        pre {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+
+        pre {
+            background: #0f172a;
+            color: #e2e8f0;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow: auto;
+            margin: 1rem 0;
+        }
+
+        code:not(pre code) {
+            background: #f1f5f9;
+            color: #0f172a;
+            padding: 0.2em 0.4em;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+
+        /* Links */
+        a {
+            color: #0b67ff;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        /* Callout boxes */
+        .callout {
+            background: #f8fafc;
+            border-left: 4px solid #2563eb;
+            padding: 1rem 1.25rem;
+            margin: 1.5rem 0;
+            border-radius: 4px;
+        }
+
+        .callout.mental-model {
+            background: #fef3c7;
+            border-left: 4px solid #f59e0b;
+        }
+
+        .callout.warning {
+            background: #fee2e2;
+            border-left: 4px solid #dc2626;
+        }
+
+        .callout.tip {
+            background: #dcfce7;
+            border-left: 4px solid #16a34a;
+        }
+
+        .callout h3 {
+            margin-top: 0;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Small text for metadata */
+        .small {
+            color: #64748b;
+            font-size: 0.9rem;
+        }
+
+        /* Diagram images */
+        img.diagram {
+            max-width: 100%;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            margin: 1rem 0;
+        }
+
+        /* Table of contents */
+        ul.toc {
+            list-style: none;
+            padding-left: 0;
+            background: #f8fafc;
+            padding: 1rem;
+            border-radius: 6px;
+        }
+
+        ul.toc>li {
+            margin: 0.5rem 0;
+        }
+
+        ul.toc ul {
+            padding-left: 1.5rem;
+            margin-top: 0.25rem;
+        }
+
+        /* Progressive disclosure */
+        details {
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+
+        details summary {
+            font-weight: 600;
+            cursor: pointer;
+            user-select: none;
+            color: #1e40af;
+            padding: 0.25rem;
+        }
+
+        details summary:hover {
+            color: #1e3a8a;
+        }
+
+        details[open] summary {
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #cbd5e1;
+            padding-bottom: 0.5rem;
+        }
+
+        /* Code catalogue styling */
+        .code-ref {
+            font-family: monospace;
+            background: #f1f5f9;
+            padding: 0.5rem;
+            margin: 0.25rem 0;
+            border-left: 3px solid #3b82f6;
+            border-radius: 3px;
+        }
+
+        .code-ref .file-path {
+            color: #1e40af;
+            font-weight: 600;
+        }
+
+        .code-ref .line-nums {
+            color: #64748b;
+            font-size: 0.85em;
+        }
+
+        /* Step-by-step flow */
+        .step {
+            background: #f1f5f9;
+            border-left: 3px solid #3b82f6;
+            padding: 0.75rem 1rem;
+            margin: 1rem 0;
+        }
+
+        .step-number {
+            font-weight: bold;
+            color: #3b82f6;
+            font-size: 1.1em;
+        }
+
+        /* Comparison table */
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 1rem 0;
+        }
+
+        th,
+        td {
+            border: 1px solid #cbd5e1;
+            padding: 0.75rem;
+            text-align: left;
+        }
+
+        th {
+            background: #f1f5f9;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            pre {
+                font-size: 0.85em;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- TITLE AND METADATA -->
+    <h1>SuperMCP: Understanding Progressive Tool Discovery</h1>
+    <p class="small">
+        <strong>Audience</strong>: Developers familiar with MCP who want to understand SuperMCP's architecture<br>
+        <strong>Reading time</strong>: 12 minutes<br>
+        <strong>Prerequisites</strong>: Basic understanding of MCP (Model Context Protocol), JSON schemas
+    </p>
+
+    <!-- TL;DR -->
+    <div class="callout">
+        <strong>TL;DR</strong>: SuperMCP avoids context overload through a <strong>three-tier progressive
+            disclosure</strong> pattern: (1) packages first (summarized), (2) tools on-demand with pagination, (3)
+        execution with output truncation. It uses lazy loading, intelligent summarization, and caching to keep the AI's
+        context window lean while still providing access to hundreds of tools across dozens of MCP servers.
+    </div>
+
+    <!-- TABLE OF CONTENTS -->
+    <h2>Table of contents</h2>
+    <ul class="toc">
+        <li><a href="#mental-models">Key Mental Models</a></li>
+        <li><a href="#the-problem">The Problem: MCP Tool Explosion</a></li>
+        <li><a href="#architecture">SuperMCP Architecture Overview</a></li>
+        <li><a href="#progressive-disclosure">The Progressive Disclosure Pattern</a>
+            <ul>
+                <li><a href="#tier1">Tier 1: Package Discovery</a></li>
+                <li><a href="#tier2">Tier 2: Tool Exploration</a></li>
+                <li><a href="#tier3">Tier 3: Tool Execution</a></li>
+            </ul>
+        </li>
+        <li><a href="#context-saving">Context-Saving Techniques</a></li>
+        <li><a href="#code-walkthrough">Code Walkthrough</a></li>
+        <li><a href="#references">References & File Map</a></li>
+    </ul>
+
+    <!-- MENTAL MODELS -->
+    <h2 id="mental-models">Key Mental Models</h2>
+    <p>Core concepts for understanding SuperMCP:</p>
+
+    <div class="callout mental-model">
+        <h3>Mental Model #1: The Vending Machine</h3>
+        <p>SuperMCP is like a <strong>vending machine with a catalog</strong>, not a buffet. Instead of dumping all
+            tools into the AI's context at once (buffet style), it shows a menu of categories first. The AI picks a
+            category, sees the items in that section, then selects what it needs. This "drill-down" pattern keeps
+            context lean.</p>
+        <p><strong>Why this matters</strong>: An AI with 50 MCP servers × 20 tools each = 1000 tool schemas in context.
+            That's ~500K tokens just for tool definitions. Progressive disclosure reduces this to ~50 tokens for the
+            meta-tools plus whatever the AI actually needs.</p>
+    </div>
+
+    <div class="callout mental-model">
+        <h3>Mental Model #2: The Library Catalog vs. All Books</h3>
+        <p>Think of the difference between having <strong>every book in a library on your desk</strong> vs. having a
+            <strong>card catalog</strong>. SuperMCP provides the card catalog (summaries, categories) and fetches the
+            actual books (full schemas, tool execution) only when requested.</p>
+        <p><strong>Why this matters</strong>: Lazy loading means MCP servers aren't even connected until their tools are
+            needed. This improves startup time and reduces unnecessary network traffic.</p>
+    </div>
+
+    <div class="callout mental-model">
+        <h3>Mental Model #3: The Compression Pyramid</h3>
+        <p>Information flows through a <strong>compression pyramid</strong>: Full schemas → Summarized descriptions +
+            arg skeletons → Package-level summaries → Tool counts. Each level up the pyramid compresses more, losing
+            detail but gaining overview.</p>
+        <p><strong>Why this matters</strong>: The AI can operate at the appropriate level of detail. Most decisions can
+            be made at the summary level; full schemas are only needed for actual execution.</p>
+    </div>
+
+    <!-- THE PROBLEM -->
+    <h2 id="the-problem">The Problem: MCP Tool Explosion</h2>
+    <p>MCP (Model Context Protocol) lets you connect AI assistants to external tools. A single MCP server might expose
+        5-50 tools. The problem emerges when you want to use <em>many</em> MCP servers:</p>
+
+    <table>
+        <tr>
+            <th>Scenario</th>
+            <th>MCP Servers</th>
+            <th>Tools</th>
+            <th>Est. Context Tokens</th>
+        </tr>
+        <tr>
+            <td>Simple setup</td>
+            <td>3</td>
+            <td>~30</td>
+            <td>~15K tokens</td>
+        </tr>
+        <tr>
+            <td>Power user</td>
+            <td>15</td>
+            <td>~200</td>
+            <td>~100K tokens</td>
+        </tr>
+        <tr>
+            <td>Enterprise (Klavis-style)</td>
+            <td>70+</td>
+            <td>1000+</td>
+            <td>~500K+ tokens</td>
+        </tr>
+    </table>
+
+    <p>Without progressive disclosure, the AI's context window fills up with tool definitions before any actual work
+        begins. This causes:</p>
+    <ul>
+        <li><strong>Context overflow</strong>: Hitting model context limits</li>
+        <li><strong>Confused tool selection</strong>: AI struggles to choose from 1000 similar-sounding tools</li>
+        <li><strong>Slow responses</strong>: Processing massive tool lists on every turn</li>
+        <li><strong>Increased costs</strong>: Paying for tokens that are just tool definitions</li>
+    </ul>
+
+    <!-- ARCHITECTURE -->
+    <h2 id="architecture">SuperMCP Architecture Overview</h2>
+    <p>SuperMCP sits between Claude and multiple MCP servers, presenting a <strong>unified interface</strong> through
+        just 6 meta-tools:</p>
+
+    <pre><code class="language-text">┌─────────────────────────────────────────────────────────────┐
+│                         Claude                              │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                    (6 meta-tools only)
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      SuperMCP Router                        │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
+│  │   Catalog   │  │  Registry   │  │     Summarizer     │  │
+│  │  (caching)  │  │ (packages)  │  │ (compression)       │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+           │              │              │              │
+           ▼              ▼              ▼              ▼
+     ┌─────────┐    ┌─────────┐    ┌─────────┐    ┌─────────┐
+     │Filesystem│   │ GitHub  │    │ Notion  │    │  Slack  │
+     │   MCP    │   │   MCP   │    │   MCP   │    │   MCP   │
+     └─────────┘    └─────────┘    └─────────┘    └─────────┘
+</code></pre>
+
+    <p>The 6 meta-tools Claude sees are:</p>
+    <ol>
+        <li><code>list_tool_packages</code> — List available MCP packages (high-level)</li>
+        <li><code>list_tools</code> — Explore tools within a specific package</li>
+        <li><code>use_tool</code> — Execute a tool from any package</li>
+        <li><code>get_help</code> — Get guidance on using SuperMCP</li>
+        <li><code>health_check_all</code> — Check package status</li>
+        <li><code>authenticate</code> — OAuth for packages that need it</li>
+    </ol>
+
+    <!-- PROGRESSIVE DISCLOSURE -->
+    <h2 id="progressive-disclosure">The Progressive Disclosure Pattern</h2>
+    <p>SuperMCP implements a three-tier progressive disclosure pattern:</p>
+
+    <h3 id="tier1">Tier 1: Package Discovery (<code>list_tool_packages</code>)</h3>
+    <p>The AI starts by asking "what packages exist?" and gets a <strong>compressed summary</strong>:</p>
+
+    <pre><code class="language-json">{
+  "packages": [
+    {
+      "package_id": "filesystem",
+      "name": "Filesystem",
+      "tool_count": 8,
+      "summary": "Local MCP with 8 tools. File and directory management. Capabilities: 3 read, 2 write, 3 list.",
+      "health": "healthy"
+    },
+    {
+      "package_id": "github",
+      "name": "GitHub",
+      "tool_count": 25,
+      "summary": "Local MCP with 25 tools. GitHub repository and issue management. Capabilities: 8 read, 5 create, 6 search.",
+      "health": "healthy"
+    }
+  ]
+}</code></pre>
+
+    <div class="callout tip">
+        <h3>Context savings at Tier 1</h3>
+        <p>Instead of 25 full tool schemas for GitHub (~10K tokens), the AI sees a single ~100 token summary. It can
+            make an informed decision about whether to explore GitHub tools without loading them.</p>
+    </div>
+
+    <h3 id="tier2">Tier 2: Tool Exploration (<code>list_tools</code>)</h3>
+    <p>When the AI decides it needs GitHub tools, it drills down into that package. Key features:</p>
+
+    <h4>Pagination</h4>
+    <p>Tools are returned in pages (default 20), preventing context explosion:</p>
+    <pre><code class="language-javascript">// Request
+{ "package_id": "github", "page_size": 10 }
+
+// Response includes next_page_token for more results
+{
+  "tools": [...first 10 tools...],
+  "next_page_token": "eyJpbmRleCI6MTB9"  // Base64 encoded cursor
+}</code></pre>
+
+    <h4>Summaries vs Full Schemas</h4>
+    <p>By default, <code>summarize: true</code> returns compressed info:</p>
+    <pre><code class="language-json">{
+  "tool_id": "github__search_repositories",
+  "summary": "Search for GitHub repositories using various criteria...",
+  "args_skeleton": {
+    "query": "&lt;string&gt;",
+    "sort": "stars",
+    "order": "desc",
+    "per_page": "&lt;number&gt;"
+  },
+  "schema_hash": "sha256:a3f2b1c9"
+}</code></pre>
+
+    <p>The <code>args_skeleton</code> shows the expected shape without the full JSON Schema verbosity. Full schemas are
+        only returned when <code>include_schemas: true</code>.</p>
+
+    <h3 id="tier3">Tier 3: Tool Execution (<code>use_tool</code>)</h3>
+    <p>Finally, the AI executes a specific tool. Progressive disclosure continues here with <strong>output
+            truncation</strong>:</p>
+
+    <pre><code class="language-javascript">// Prevent massive outputs from filling context
+{
+  "package_id": "filesystem",
+  "tool_id": "read_file",
+  "args": { "path": "/var/log/huge.log" },
+  "max_output_chars": 50000  // Truncate output if larger
+}</code></pre>
+
+    <div class="callout warning">
+        <h3>Dry run mode</h3>
+        <p>The AI can also use <code>dry_run: true</code> to validate arguments without execution, preventing wasted
+            tokens on failed calls.</p>
+    </div>
+
+    <!-- CONTEXT-SAVING TECHNIQUES -->
+    <h2 id="context-saving">Context-Saving Techniques</h2>
+    <p>Beyond the three-tier pattern, SuperMCP employs several additional techniques:</p>
+
+    <details>
+        <summary>Lazy Loading</summary>
+        <p>MCP servers are only connected when their tools are actually needed. The <code>ensurePackageLoaded()</code>
+            method in <code>catalog.ts</code> checks if tools are cached:</p>
+        <pre><code class="language-typescript">async ensurePackageLoaded(packageId: string): Promise&lt;void&gt; {
+  const cached = this.cache.get(packageId);
+  if (!cached) {
+    await this.refreshPackage(packageId);  // Only now connects to MCP
+    return;
+  }
+  // Retry on error after 60 seconds
+  const needsRetry = cached.status !== "ready" && 
+    Date.now() - cached.lastUpdated > ERROR_RETRY_INTERVAL_MS;
+  if (needsRetry) {
+    await this.refreshPackage(packageId);
+  }
+}</code></pre>
+        <p><strong>Impact</strong>: Unused packages never consume resources or context.</p>
+    </details>
+
+    <details>
+        <summary>Intelligent Summarization</summary>
+        <p>The <code>summarize.ts</code> module compresses tool information:</p>
+        <ul>
+            <li><strong>Description truncation</strong>: Descriptions over 100 chars are trimmed with "..."</li>
+            <li><strong>Arg skeletons</strong>: Full JSON Schema → placeholder format (<code>&lt;string&gt;</code>,
+                <code>&lt;number&gt;</code>)</li>
+            <li><strong>Package categorization</strong>: Tools are auto-categorized (read/write/search/create/delete) to
+                give capability overviews</li>
+        </ul>
+        <pre><code class="language-typescript">// From summarize.ts - creates readable placeholders
+function createSkeletonValue(schema: any, key?: string): any {
+  switch (schema.type) {
+    case "string":
+      if (schema.format === "uri") return "&lt;url&gt;";
+      if (key?.toLowerCase().includes("path")) return "&lt;path&gt;";
+      return "&lt;string&gt;";
+    case "array":
+      return [createSkeletonValue(schema.items)];
+    // ...
+  }
+}</code></pre>
+    </details>
+
+    <details>
+        <summary>ETag-based Caching</summary>
+        <p>Each package and the global catalog have ETags. If nothing has changed, cached data is reused without
+            re-fetching from MCP servers:</p>
+        <pre><code class="language-typescript">interface PackageToolCache {
+  packageId: string;
+  tools: CachedTool[];
+  lastUpdated: number;
+  etag: string;           // Content hash for change detection
+  status: CatalogStatus;
+  lastError?: string;
+}</code></pre>
+    </details>
+
+    <details>
+        <summary>Schema Hashes</summary>
+        <p>Instead of sending full schemas, SuperMCP can send a hash. If the AI has seen that hash before, it knows the
+            schema hasn't changed:</p>
+        <pre><code class="language-typescript">export function createSchemaHash(schema: any): string {
+  if (!schema) return "empty";
+  const str = JSON.stringify(schema);
+  let hash = 0;
+  for (let i = 0; i &lt; str.length; i++) {
+    hash = ((hash &lt;&lt; 5) - hash) + str.charCodeAt(i);
+  }
+  return `sha256:${Math.abs(hash).toString(16)}`;
+}</code></pre>
+    </details>
+
+    <details>
+        <summary>Namespaced Tool IDs</summary>
+        <p>Tools are prefixed with their package ID (e.g., <code>github__search_repositories</code>) to prevent
+            collisions when multiple packages have similar tool names. This is handled automatically:</p>
+        <pre><code class="language-typescript">// From catalog.ts
+const namespacedId = `${packageId}__${cachedTool.tool.name}`;</code></pre>
+    </details>
+
+    <!-- CODE WALKTHROUGH -->
+    <h2 id="code-walkthrough">Code Walkthrough</h2>
+    <p>Let's trace a typical interaction through the codebase:</p>
+
+    <div class="step">
+        <span class="step-number">Step 1:</span> AI calls <code>list_tool_packages()</code>
+        <p><strong>Location</strong>: <code>super-mcp/src/handlers/listToolPackages.ts</code></p>
+        <pre><code class="language-typescript">// For each package, load it lazily and build a summary
+const packageInfos = await Promise.all(
+  packages.map(async (pkg) => {
+    await catalog.ensurePackageLoaded(pkg.id);  // Lazy load
+    const toolCount = catalog.countTools(pkg.id);
+    const summary = await catalog.buildPackageSummary(pkg);  // Compression
+    return {
+      package_id: pkg.id,
+      tool_count: toolCount,
+      summary: pkg.description || summary,
+      // ...
+    };
+  })
+);</code></pre>
+    </div>
+
+    <div class="step">
+        <span class="step-number">Step 2:</span> AI decides to explore GitHub, calls
+        <code>list_tools({ package_id: "github" })</code>
+        <p><strong>Location</strong>: <code>super-mcp/src/handlers/listTools.ts</code></p>
+        <pre><code class="language-typescript">// Build tool infos with optional summarization
+const toolInfos = await catalog.buildToolInfos(package_id, {
+  summarize,        // Default: true (compact)
+  include_schemas,  // Default: false (saves tokens)
+});
+
+// Paginate results
+const startIndex = page_token ? parseInt(decode(page_token)) : 0;
+const tools = annotatedTools.slice(startIndex, startIndex + page_size);
+const nextToken = endIndex &lt; annotatedTools.length ? encode(endIndex) : null;</code></pre>
+    </div>
+
+    <div class="step">
+        <span class="step-number">Step 3:</span> AI executes
+        <code>use_tool({ package_id: "github", tool_id: "search_repositories", args: {...} })</code>
+        <p><strong>Location</strong>: <code>super-mcp/src/handlers/useTool.ts</code></p>
+        <p>At this point, the actual tool is invoked. The <code>max_output_chars</code> parameter can truncate large
+            responses.</p>
+    </div>
+
+    <!-- REFERENCES -->
+    <h2 id="references">References & File Map</h2>
+    <ul>
+        <li><strong>Entry points</strong>: <code>super-mcp/src/server.ts</code> - MCP server with meta-tool definitions
+        </li>
+        <li><strong>Key directories</strong>:
+            <ul>
+                <li><code>super-mcp/src/handlers/</code> - Request handlers for each meta-tool</li>
+                <li><code>super-mcp/src/clients/</code> - MCP client implementations (stdio, HTTP)</li>
+                <li><code>super-mcp/src/auth/</code> - OAuth provider implementations</li>
+            </ul>
+        </li>
+        <li><strong>Key files</strong>:
+            <ul>
+                <li><code>catalog.ts</code> - Tool caching, lazy loading, pagination logic</li>
+                <li><code>summarize.ts</code> - Tool/package summarization, arg skeletons</li>
+                <li><code>registry.ts</code> - Package configuration and client management</li>
+                <li><code>security.ts</code> - Tool/package allowlist/blocklist</li>
+            </ul>
+        </li>
+        <li><strong>Related documentation</strong>:
+            <ul>
+                <li><a
+                        href="cursor://file//Users/greg/dev/gdconsult_work/mindstone/MindstoneRebel/docs/project/MCP_CONFIGURATION.md">MCP
+                        Configuration</a> - How Mindstone Rebel configures MCP</li>
+                <li><a href="cursor://file//Users/greg/dev/gdconsult_work/mindstone/MindstoneRebel/super-mcp/README.md">SuperMCP
+                        README</a> - User-facing documentation</li>
+            </ul>
+        </li>
+        <li><strong>External resources</strong>:
+            <ul>
+                <li><a href="https://modelcontextprotocol.io/">MCP Specification</a> - Official Model Context Protocol
+                    docs</li>
+                <li><a href="https://github.com/modelcontextprotocol/servers">MCP Servers Repository</a> - Reference MCP
+                    server implementations</li>
+            </ul>
+        </li>
+    </ul>
+
+    <!-- SUMMARY BOX -->
+    <div class="callout">
+        <h3>Summary: How SuperMCP Avoids Context Overload</h3>
+        <ol>
+            <li><strong>Package-first abstraction</strong>: Shows packages (70 items) not tools (1000+ items)</li>
+            <li><strong>Lazy loading</strong>: MCP servers only connect when their tools are requested</li>
+            <li><strong>Intelligent summarization</strong>: Descriptions truncated, schemas → skeletons</li>
+            <li><strong>Pagination</strong>: Tool lists chunked into 20-item pages</li>
+            <li><strong>Output truncation</strong>: Large tool outputs can be capped via <code>max_output_chars</code>
+            </li>
+            <li><strong>Schema hashes</strong>: Detect changes without sending full schemas</li>
+        </ol>
+        <p>The result: An AI can access 1000+ tools across 70+ MCP servers while keeping its context focused on the ~50
+            tokens of meta-tool definitions plus whatever it actually needs for the current task.</p>
+    </div>
+
+    <!-- FOOTER -->
+    <hr />
+    <p class="small">
+        Last updated: 2024-12-12<br>
+        For questions or corrections, see <a
+            href="cursor://file//Users/greg/dev/gdconsult_work/mindstone/MindstoneRebel/docs/project/">Project
+            Documentation</a>
+    </p>
+
+</body>
+
+</html>
