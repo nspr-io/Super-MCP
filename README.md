@@ -13,6 +13,21 @@ Super MCP Router allows you to configure multiple MCP servers (both local stdio 
 - `authenticate` - Start OAuth authentication for packages that require it
 - `health_check_all` - Check the operational status of all configured packages
 
+## Documentation
+
+For detailed guides, see the `docs/` directory:
+
+| Document | Description |
+|----------|-------------|
+| [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) | Complete schema for all config options |
+| [Security Policy Guide](docs/SECURITY_POLICY_GUIDE.md) | Allowlist/blocklist rules, patterns, hot-reload |
+| [OAuth & Authentication](docs/OAUTH_AND_AUTHENTICATION.md) | API keys, OAuth flows, token storage |
+| [Transport Modes](docs/TRANSPORT_MODES.md) | STDIO vs HTTP comparison and selection guide |
+| [Error Codes Reference](docs/ERROR_CODES_REFERENCE.md) | All error codes with causes and solutions |
+| [Timeout Configuration](docs/TIMEOUT_CONFIGURATION.md) | Per-server and global timeout settings |
+| [Multi-Config Best Practices](docs/MULTI_CONFIG_BEST_PRACTICES.md) | Organizing configs across files |
+| [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) | Component design and request flow |
+
 ## Quick Start (No Installation Required!)
 
 Super MCP Router supports two transport modes:
@@ -111,6 +126,8 @@ Or manually edit `~/.super-mcp/config.json` to add custom MCPs.
 
 ## Transport Modes
 
+> **See also**: [Transport Modes Guide](docs/TRANSPORT_MODES.md) for detailed comparison and selection guidance.
+
 ### STDIO Mode (Default)
 - ✅ Best for: Local Claude Desktop integration
 - ✅ Zero configuration needed
@@ -128,6 +145,8 @@ Or manually edit `~/.super-mcp/config.json` to add custom MCPs.
 - ⚠️ Slightly higher latency than stdio (minimal)
 
 ## Configuration
+
+> **See also**: [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) for complete schema documentation.
 
 Super MCP Router supports the standard MCP `mcpServers` configuration format, making it easy to drop in existing MCP server configurations.
 
@@ -208,6 +227,8 @@ This allows you to:
 
 ### Configuring Tool Timeouts
 
+> **See also**: [Timeout Configuration](docs/TIMEOUT_CONFIGURATION.md) for detailed timeout guide.
+
 Super MCP Router supports configurable timeouts for long-running tool executions. By default, tools timeout after 5 minutes (300,000ms), but you can customize this per-server or globally.
 
 **Per-Server Timeout:**
@@ -270,6 +291,8 @@ npx super-mcp-router --config /custom/path/config.json
 ```
 
 ## Using Multiple Configuration Files
+
+> **See also**: [Multi-Config Best Practices](docs/MULTI_CONFIG_BEST_PRACTICES.md) for organization strategies.
 
 You can split your MCP servers across multiple configuration files for better organization. This is useful for:
 - Separating personal and work MCPs
@@ -454,6 +477,9 @@ src/
 ## Security
 
 ### Credential Safety
+
+> **See also**: [OAuth & Authentication](docs/OAUTH_AND_AUTHENTICATION.md) for detailed auth documentation.
+
 - **Never commit your `super-mcp-config.json`** - it contains API keys and credentials
 - Tokens stored securely in OS keychain (with file fallback)
 - All sensitive data redacted from logs
@@ -463,6 +489,8 @@ src/
 ⚠️ **Important**: The `.gitignore` file excludes your config file, but double-check before committing!
 
 ### Security Policy (Tool Blocking)
+
+> **See also**: [Security Policy Guide](docs/SECURITY_POLICY_GUIDE.md) for complete security documentation.
 
 Super MCP Router includes a security policy system that lets you control which tools and packages can be used. This is useful for:
 - Blocking dangerous operations (e.g., file deletion)
@@ -516,6 +544,8 @@ Tools can be specified as:
 Security configuration is hot-reloaded when config files change - no server restart required. Edit your config file and the new rules apply immediately to subsequent tool calls.
 
 ## Built-in Help System
+
+> **See also**: [Error Codes Reference](docs/ERROR_CODES_REFERENCE.md) for all error codes with solutions.
 
 Super MCP includes comprehensive built-in help accessible through the `get_help` tool:
 
