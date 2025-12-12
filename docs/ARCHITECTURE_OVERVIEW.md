@@ -5,7 +5,7 @@ High-level overview of Super-MCP's component architecture and request flow.
 ## See Also
 
 - [README.md](../README.md) – Quick start and configuration guide
-- [docs/project/ARCHITECTURE_IMPROVEMENT_PLAN.md](project/ARCHITECTURE_IMPROVEMENT_PLAN.md) – Internal refactoring notes
+- [docs/plans/251208_architecture_improvement_plan.md](plans/251208_architecture_improvement_plan.md) – Internal refactoring notes
 - [src/server.ts](../src/server.ts) – MCP server and routing
 - [src/registry.ts](../src/registry.ts) – Config and client management
 - [src/catalog.ts](../src/catalog.ts) – Tool caching

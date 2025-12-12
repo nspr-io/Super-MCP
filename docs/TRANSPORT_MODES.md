@@ -52,11 +52,10 @@ The single-concurrency queue addresses known race conditions:
 
 ```json
 {
-  "packages": {
+  "mcpServers": {
     "filesystem": {
       "command": "npx",
-      "args": ["-y", "@anthropic-ai/mcp-server-filesystem", "/tmp"],
-      "transport": "stdio"
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
     }
   }
 }
@@ -84,7 +83,7 @@ Super-MCP supports two HTTP sub-types:
 | `"sse"` | HTTP + Server-Sent Events | **Deprecated** (MCP spec 2025-03-26) |
 | `"http"` | Streamable HTTP | **Recommended** |
 
-When `transportType` is omitted, Streamable HTTP is used by default.
+When `type` is omitted for HTTP servers, Streamable HTTP is used by default.
 
 ### When to Use HTTP
 
@@ -99,10 +98,10 @@ When `transportType` is omitted, Streamable HTTP is used by default.
 **Basic HTTP (Streamable HTTP - recommended):**
 ```json
 {
-  "packages": {
+  "mcpServers": {
     "my-mcp": {
-      "base_url": "http://localhost:3000/mcp",
-      "transportType": "http"
+      "url": "http://localhost:3000/mcp",
+      "type": "http"
     }
   }
 }
@@ -111,10 +110,10 @@ When `transportType` is omitted, Streamable HTTP is used by default.
 **HTTP + SSE (deprecated):**
 ```json
 {
-  "packages": {
+  "mcpServers": {
     "my-mcp": {
-      "base_url": "http://localhost:3000/sse",
-      "transportType": "sse"
+      "url": "http://localhost:3000/sse",
+      "type": "sse"
     }
   }
 }
