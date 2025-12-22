@@ -603,6 +603,99 @@ export class PackageRegistry {
     return client;
   }
 
+  /**
+   * Normalize a single server entry from raw config to PackageConfig.
+   * Used by restartPackage to re-expand environment variables.
+   */
+  private normalizeServerEntry(id: string, serverConfig: StandardServerConfig | ExtendedServerConfig): PackageConfig {
+    const extConfig = serverConfig as ExtendedServerConfig;
+    
+    let transport: "stdio" | "http" = "stdio";
+    let transportType: "sse" | "http" | undefined;
+    let baseUrl: string | undefined;
+    
+    if (extConfig.type === "sse" || extConfig.type === "http" || extConfig.url) {
+      transport = "http";
+      baseUrl = extConfig.url;
+      transportType = extConfig.type === "sse" ? "sse" : "http";
+    }
+    
+    return {
+      id,
+      name: extConfig.name || id,
+      description: extConfig.description,
+      transport,
+      transportType,
+      command: extConfig.command,
+      args: extConfig.args,
+      env: expandEnvironmentVariables(extConfig.env, id),
+      cwd: extConfig.cwd,
+      base_url: baseUrl,
+      auth: extConfig.auth,
+      extra_headers: extConfig.headers,
+      visibility: extConfig.visibility || "default",
+      oauth: extConfig.oauth
+    };
+  }
+
+  /**
+   * Restart a package to pick up credential or configuration changes.
+   * Closes the existing client and re-expands environment variables from raw config.
+   * Next tool call will reconnect with fresh configuration.
+   */
+  async restartPackage(packageId: string): Promise<{ success: boolean; message: string }> {
+    logger.info("Restarting package", { package_id: packageId });
+    
+    // Check if package exists
+    const pkgIndex = this.packages.findIndex(p => p.id === packageId);
+    if (pkgIndex < 0) {
+      return { success: false, message: `Package '${packageId}' not found in configuration` };
+    }
+    
+    // Wait for any pending connection to complete first (race condition handling)
+    const pendingPromise = this.clientPromises.get(packageId);
+    if (pendingPromise) {
+      logger.debug("Waiting for pending connection before restart", { package_id: packageId });
+      try {
+        const pendingClient = await pendingPromise;
+        await pendingClient.close();
+      } catch {
+        // Ignore errors - connection may have failed
+      }
+      this.clientPromises.delete(packageId);
+    }
+    
+    // Close existing client if any
+    const client = this.clients.get(packageId);
+    if (client) {
+      try {
+        await client.close();
+        logger.debug("Closed existing client", { package_id: packageId });
+      } catch (error) {
+        logger.warn("Error closing client during restart", {
+          package_id: packageId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+      this.clients.delete(packageId);
+    }
+    
+    // Re-normalize from raw config to pick up env var changes
+    const serverConfig = this.config.mcpServers?.[packageId];
+    if (serverConfig) {
+      const freshPkg = this.normalizeServerEntry(packageId, serverConfig);
+      this.packages[pkgIndex] = freshPkg;
+      logger.info("Package config refreshed from raw config", { package_id: packageId });
+    } else {
+      logger.debug("No raw config found, keeping existing package config", { package_id: packageId });
+    }
+    
+    return {
+      success: true,
+      message: `Package '${packageId}' restarted. Next tool call will reconnect with fresh configuration.`
+    };
+  }
+
   async closeAll(): Promise<void> {
     logger.info("Closing all clients", {
       client_count: this.clients.size,

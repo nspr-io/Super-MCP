@@ -5,6 +5,22 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2025-12-22
+
+### Added
+- **Package restart tool**: New `restart_package` tool to hot-reload credentials without restarting Super MCP
+  - Closes existing client connection and re-expands environment variables from raw config
+  - Picks up new `process.env` values for packages using `${VAR}` syntax
+  - Handles race conditions: waits for pending connections before restart
+  - Next tool call automatically reconnects with fresh configuration
+- New `restartPackage()` method on `PackageRegistry` for programmatic package restarts
+- New `normalizeServerEntry()` helper for single-package config normalization
+
+### Use Cases
+- Update API keys for third-party MCP packages without full server restart
+- Refresh OAuth tokens or credentials that have been rotated
+- Development workflow: change credentials and immediately test without restart
+
 ## [2.2.0] - 2025-12-08
 
 ### Changed

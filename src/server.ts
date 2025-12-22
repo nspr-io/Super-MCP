@@ -16,6 +16,7 @@ import {
   handleHealthCheckAll,
   handleAuthenticate,
   handleGetHelp,
+  handleRestartPackage,
 } from "./handlers/index.js";
 
 const logger = getLogger();
@@ -250,6 +251,21 @@ export async function startServer(options: {
               required: ["package_id"],
             },
           },
+          {
+            name: "restart_package",
+            description: "Restart a package to pick up credential or configuration changes. Use this after updating API keys or environment variables for a package. Closes the existing connection and re-reads configuration.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                package_id: {
+                  type: "string",
+                  description: "The package ID to restart",
+                  examples: ["filesystem", "github", "notion-api"],
+                },
+              },
+              required: ["package_id"],
+            },
+          },
         ],
       };
     });
@@ -276,6 +292,9 @@ export async function startServer(options: {
 
           case "get_help":
             return await handleGetHelp(args as any, registry);
+
+          case "restart_package":
+            return await handleRestartPackage(args as any, registry);
 
           default:
             throw {
