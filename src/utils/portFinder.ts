@@ -34,7 +34,7 @@ export async function findAvailablePort(
 /**
  * Check if a specific port is available for binding.
  */
-function checkPortAvailable(port: number): Promise<boolean> {
+export function checkPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
     server.once("error", () => resolve(false));

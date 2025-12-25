@@ -1,6 +1,7 @@
 import { PackageRegistry } from "../registry.js";
 import { getLogger } from "../logging.js";
-import { findAvailablePort } from "../utils/portFinder.js";
+import { findAvailablePort, checkPortAvailable } from "../utils/portFinder.js";
+import { SimpleOAuthProvider } from "../auth/providers/simple.js";
 
 const logger = getLogger();
 
@@ -93,8 +94,25 @@ export async function handleAuthenticate(
     
     if (wait_for_completion) {
       try {
-        oauthPort = await findAvailablePort(5173, 10);
-        logger.info("Found available OAuth port", { package_id, oauth_port: oauthPort });
+        // Part A: Try to reuse saved OAuth port if available
+        const savedPort = await SimpleOAuthProvider.getSavedClientPort(package_id);
+        if (savedPort) {
+          const savedPortAvailable = await checkPortAvailable(savedPort);
+          if (savedPortAvailable) {
+            oauthPort = savedPort;
+            logger.info("Reusing saved OAuth port", { package_id, oauth_port: oauthPort });
+          } else {
+            logger.info("Saved OAuth port busy, finding new port", { 
+              package_id, 
+              saved_port: savedPort,
+              message: "Client registration will be invalidated if mismatch"
+            });
+            oauthPort = await findAvailablePort(5173, 10);
+          }
+        } else {
+          oauthPort = await findAvailablePort(5173, 10);
+          logger.info("Found available OAuth port", { package_id, oauth_port: oauthPort });
+        }
       } catch (portError) {
         logger.error("Failed to find available port", { 
           package_id,

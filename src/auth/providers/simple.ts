@@ -26,6 +26,28 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
     this.tokenStoragePath = path.join(homedir(), ".super-mcp", "oauth-tokens");
   }
   
+  /**
+   * Get the OAuth callback port from a saved client registration.
+   * Returns undefined if no registration exists or redirect_uri is malformed.
+   */
+  static async getSavedClientPort(packageId: string): Promise<number | undefined> {
+    try {
+      const tokenStoragePath = path.join(homedir(), ".super-mcp", "oauth-tokens");
+      const clientPath = path.join(tokenStoragePath, `${packageId}_client.json`);
+      const clientData = await fs.readFile(clientPath, "utf8");
+      const clientInfo = JSON.parse(clientData);
+      
+      const redirectUri = clientInfo?.redirect_uris?.[0];
+      if (!redirectUri) return undefined;
+      
+      const url = new URL(redirectUri);
+      const port = parseInt(url.port, 10);
+      return isNaN(port) ? undefined : port;
+    } catch {
+      return undefined; // No saved client or parse error
+    }
+  }
+  
   async initialize() {
     await this.loadPersistedData();
   }
@@ -185,6 +207,45 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
     
     if (scope === 'all' || scope === 'verifier') {
       this.codeVerifierValue = undefined;
+    }
+  }
+  
+  /**
+   * Check if the saved client registration has a different port than current.
+   * If mismatch detected, invalidates ALL credentials (client + tokens).
+   * 
+   * @returns true if credentials were invalidated due to mismatch
+   */
+  async checkAndInvalidateOnPortMismatch(): Promise<boolean> {
+    if (!this.savedClientInfo?.redirect_uris?.[0]) {
+      return false; // No saved client, nothing to mismatch
+    }
+    
+    try {
+      const savedUri = this.savedClientInfo.redirect_uris[0];
+      const savedUrl = new URL(savedUri);
+      const savedPort = parseInt(savedUrl.port, 10);
+      
+      if (isNaN(savedPort) || savedPort === this.oauthPort) {
+        return false; // No mismatch
+      }
+      
+      logger.warn("OAuth port mismatch detected, invalidating stale credentials", {
+        package_id: this.packageId,
+        saved_port: savedPort,
+        current_port: this.oauthPort,
+        message: "Will re-register client with new redirect_uri"
+      });
+      
+      // Must invalidate BOTH - tokens are bound to client_id
+      await this.invalidateCredentials('all');
+      return true;
+    } catch (error) {
+      logger.debug("Error checking port mismatch", {
+        package_id: this.packageId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      return false;
     }
   }
 }

@@ -54,6 +54,17 @@ export class HttpMcpClient implements McpClient {
       await simpleProvider.initialize();
       
       if (forceOAuth) {
+        // Part B: Safety net - invalidate stale credentials on port mismatch
+        // Only check when forceOAuth=true (explicit authenticate call)
+        // Don't check on normal startup to avoid breaking refresh-only flows
+        const invalidated = await simpleProvider.checkAndInvalidateOnPortMismatch();
+        if (invalidated) {
+          logger.info("OAuth credentials invalidated due to port mismatch, will re-register", {
+            package_id: this.packageId,
+            oauth_port: this.oauthPort
+          });
+        }
+        
         this.oauthProvider = simpleProvider;
         this.useOAuth = true;
         logger.debug("OAuth provider initialized for browser flow", { package_id: this.packageId, oauth_port: this.oauthPort });
