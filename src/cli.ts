@@ -16,7 +16,7 @@ async function ensureSetup(): Promise<string> {
   try {
     // Create directories if they don't exist
     if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
+      fs.mkdirSync(logsDir, { recursive: true, mode: 0o700 });
     }
     
     // Create empty config if it doesn't exist
@@ -25,7 +25,7 @@ async function ensureSetup(): Promise<string> {
         "$schema": "https://raw.githubusercontent.com/JoshuaWohle/Super-MCP/main/super-mcp-config.schema.json",
         "mcpServers": {}
       };
-      fs.writeFileSync(configFile, JSON.stringify(emptyConfig, null, 2));
+      fs.writeFileSync(configFile, JSON.stringify(emptyConfig, null, 2), { mode: 0o600 });
       console.error(`📁 Created config at: ${configFile}`);
       console.error(`💡 Add MCP servers to the config or use 'npx super-mcp-router add'`);
     }
@@ -129,7 +129,7 @@ async function handleAddCommand() {
   config.mcpServers[serverType] = template;
   
   // Save config
-  fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
+  fs.writeFileSync(configFile, JSON.stringify(config, null, 2), { mode: 0o600 });
   console.error(`✅ Added ${serverType} to config at ${configFile}`);
   
   if (template.env) {

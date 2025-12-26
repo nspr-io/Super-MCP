@@ -30,14 +30,14 @@ class Logger {
     
     // Create logs directory
     const logsDir = path.join(process.env.HOME || "", ".super-mcp", "logs");
-    fs.mkdirSync(logsDir, { recursive: true });
+    fs.mkdirSync(logsDir, { recursive: true, mode: 0o700 });
     
     // Create log file with timestamp
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
     this.logFile = path.join(logsDir, `super-mcp-${timestamp}.log`);
     
     // Create write stream
-    this.logStream = fs.createWriteStream(this.logFile, { flags: 'a' });
+    this.logStream = fs.createWriteStream(this.logFile, { flags: 'a', mode: 0o600 });
     
     // Log startup
     this.writeToFile({

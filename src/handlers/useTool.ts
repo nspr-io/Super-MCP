@@ -92,49 +92,50 @@ export async function handleUseTool(
     };
   }
 
-  if (dry_run) {
-    try {
-      validator.validate(schema, args, { package_id, tool_id });
-    } catch (error) {
-      if (error instanceof ValidationError) {
-        let helpMessage = `Argument validation failed for tool '${tool_id}' in package '${package_id}'.\n`;
-        helpMessage += `\n${error.message}\n`;
-        
-        if (error.errors && error.errors.length > 0) {
-          helpMessage += `\nValidation errors:`;
-          error.errors.forEach((err: any) => {
-            const path = err.instancePath || "root";
-            helpMessage += `\n  • ${path}: ${err.message}`;
-            
-            if (err.keyword === "required") {
-              helpMessage += ` (missing: ${err.params?.missingProperty})`;
-            } else if (err.keyword === "type") {
-              helpMessage += ` (expected: ${err.params?.type}, got: ${typeof err.data})`;
-            } else if (err.keyword === "enum") {
-              helpMessage += ` (allowed values: ${err.params?.allowedValues?.join(", ")})`;
-            }
-          });
-        }
-        
-        helpMessage += `\n\nTo see the correct schema, run:`;
-        helpMessage += `\n  list_tools(package_id: "${package_id}", include_schemas: true)`;
-        helpMessage += `\n\nTo test your arguments without executing:`;
-        helpMessage += `\n  use_tool(package_id: "${package_id}", tool_id: "${tool_id}", args: {...}, dry_run: true)`;
-        
-        throw {
-          code: ERROR_CODES.ARG_VALIDATION_FAILED,
-          message: helpMessage,
-          data: {
-            package_id,
-            tool_id,
-            errors: error.errors,
-            provided_args: args ? Object.keys(args) : [],
-          },
-        };
+  // Validate arguments unconditionally (before checking dry_run)
+  try {
+    validator.validate(schema, args, { package_id, tool_id });
+  } catch (error) {
+    if (error instanceof ValidationError) {
+      let helpMessage = `Argument validation failed for tool '${tool_id}' in package '${package_id}'.\n`;
+      helpMessage += `\n${error.message}\n`;
+      
+      if (error.errors && error.errors.length > 0) {
+        helpMessage += `\nValidation errors:`;
+        error.errors.forEach((err: any) => {
+          const path = err.instancePath || "root";
+          helpMessage += `\n  • ${path}: ${err.message}`;
+          
+          if (err.keyword === "required") {
+            helpMessage += ` (missing: ${err.params?.missingProperty})`;
+          } else if (err.keyword === "type") {
+            helpMessage += ` (expected: ${err.params?.type}, got: ${typeof err.data})`;
+          } else if (err.keyword === "enum") {
+            helpMessage += ` (allowed values: ${err.params?.allowedValues?.join(", ")})`;
+          }
+        });
       }
-      throw error;
+      
+      helpMessage += `\n\nTo see the correct schema, run:`;
+      helpMessage += `\n  list_tools(package_id: "${package_id}", include_schemas: true)`;
+      helpMessage += `\n\nTo test your arguments without executing:`;
+      helpMessage += `\n  use_tool(package_id: "${package_id}", tool_id: "${tool_id}", args: {...}, dry_run: true)`;
+      
+      throw {
+        code: ERROR_CODES.ARG_VALIDATION_FAILED,
+        message: helpMessage,
+        data: {
+          package_id,
+          tool_id,
+          errors: error.errors,
+          provided_args: args ? Object.keys(args) : [],
+        },
+      };
     }
+    throw error;
+  }
 
+  if (dry_run) {
     const result: UseToolOutput = {
       package_id,
       tool_id,

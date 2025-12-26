@@ -380,7 +380,7 @@ export async function startServer(options: {
       app.post("/mcp", mcpHandler);
       app.get("/mcp", mcpHandler);
 
-      const httpServer = app.listen(port, () => {
+      const httpServer = app.listen(port, '127.0.0.1', () => {
         logger.info("Super MCP Router started successfully", {
           transport: "http",
           port,

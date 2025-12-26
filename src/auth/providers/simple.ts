@@ -1,13 +1,11 @@
 import { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { getLogger } from "../../logging.js";
-import { exec } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { homedir } from "os";
 
 const logger = getLogger();
-const execAsync = promisify(exec);
 
 /**
  * Simple OAuth provider that opens browser for authorization
@@ -99,9 +97,9 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
     this.savedClientInfo = info;
     
     try {
-      await fs.mkdir(this.tokenStoragePath, { recursive: true });
+      await fs.mkdir(this.tokenStoragePath, { recursive: true, mode: 0o700 });
       const clientPath = path.join(this.tokenStoragePath, `${this.packageId}_client.json`);
-      await fs.writeFile(clientPath, JSON.stringify(info, null, 2));
+      await fs.writeFile(clientPath, JSON.stringify(info, null, 2), { mode: 0o600 });
       logger.info("OAuth client information saved to disk", { 
         package_id: this.packageId,
         client_id: info?.client_id,
@@ -123,9 +121,9 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
     this.savedTokens = tokens;
     
     try {
-      await fs.mkdir(this.tokenStoragePath, { recursive: true });
+      await fs.mkdir(this.tokenStoragePath, { recursive: true, mode: 0o700 });
       const tokenPath = path.join(this.tokenStoragePath, `${this.packageId}_tokens.json`);
-      await fs.writeFile(tokenPath, JSON.stringify(tokens, null, 2));
+      await fs.writeFile(tokenPath, JSON.stringify(tokens, null, 2), { mode: 0o600 });
       logger.info("OAuth tokens saved to disk", { 
         package_id: this.packageId,
         path: tokenPath 
@@ -156,15 +154,28 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
       });
     }
     
-    const command = process.platform === 'darwin' ? 'open' :
-                   process.platform === 'win32' ? 'start' :
-                   'xdg-open';
-    
+    const urlString = authUrl.toString();
     try {
-      await execAsync(`${command} "${authUrl.toString()}"`);
+      let child;
+      if (process.platform === 'darwin') {
+        child = spawn('open', [urlString], { detached: true, stdio: 'ignore' });
+      } else if (process.platform === 'win32') {
+        // Use rundll32 instead of cmd/start to avoid shell metacharacter issues with & in URLs
+        child = spawn('rundll32', ['url.dll,FileProtocolHandler', urlString], { detached: true, stdio: 'ignore' });
+      } else {
+        child = spawn('xdg-open', [urlString], { detached: true, stdio: 'ignore' });
+      }
+      // Handle spawn errors to prevent crashing the process
+      child.on('error', (err) => {
+        logger.error("Failed to open browser", {
+          package_id: this.packageId,
+          error: err.message
+        });
+      });
+      child.unref();
       logger.info("Browser opened for OAuth", { package_id: this.packageId });
     } catch (error) {
-      logger.error("Failed to open browser", { 
+      logger.error("Failed to open browser", {
         package_id: this.packageId,
         error: error instanceof Error ? error.message : String(error)
       });
@@ -176,7 +187,10 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   }
   
   async codeVerifier() {
-    return this.codeVerifierValue || "dummy-verifier";
+    if (!this.codeVerifierValue) {
+      throw new Error("PKCE code verifier not set - saveCodeVerifier() must be called first");
+    }
+    return this.codeVerifierValue;
   }
   
   async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' = 'all') {
