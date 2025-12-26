@@ -352,6 +352,24 @@ export async function startServer(options: {
 
     if (transport === "http") {
       const app = express();
+
+      // DNS rebinding protection - validate Host header
+      // Must be placed BEFORE body parsing middleware
+      // Only applied to /mcp endpoint; /health is left open for external probes
+      // Note: Server binds to 127.0.0.1 only (IPv4). If IPv6 binding is added,
+      // also allow '::1' here.
+      app.use('/mcp', (req, res, next) => {
+        const host = req.headers.host?.split(':')[0]?.toLowerCase(); // Case-insensitive per RFC 7230
+        if (host !== 'localhost' && host !== '127.0.0.1') {
+          logger.warn("Request rejected - invalid Host header (DNS rebinding protection)", {
+            host_header: req.headers.host // Log original for debugging
+          });
+          res.status(403).json({ error: 'Forbidden - invalid host' });
+          return;
+        }
+        next();
+      });
+
       app.use(express.json());
 
       const httpTransport = new StreamableHTTPServerTransport({

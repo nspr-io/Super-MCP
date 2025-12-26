@@ -1,4 +1,5 @@
 import * as http from "http";
+import { timingSafeEqual } from "crypto";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
@@ -141,9 +142,24 @@ export class OAuthCallbackServer {
   private port: number;
   private resolveCallback?: (code: string) => void;
   private rejectCallback?: (error: Error) => void;
+  private expectedState?: string;
 
   constructor(port: number = 5173) {
     this.port = port;
+  }
+  
+  /**
+   * Timing-safe string comparison to prevent timing attacks on state validation.
+   */
+  private safeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) {
+      return false;
+    }
+    try {
+      return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+    } catch {
+      return false;
+    }
   }
 
   getPort(): number {
@@ -159,6 +175,7 @@ export class OAuthCallbackServer {
           const code = url.searchParams.get("code");
           const error = url.searchParams.get("error");
           const errorDescription = url.searchParams.get("error_description");
+          const receivedState = url.searchParams.get("state");
 
           if (error) {
             res.writeHead(200, SECURITY_HEADERS);
@@ -168,10 +185,43 @@ export class OAuthCallbackServer {
               this.rejectCallback(new Error(`OAuth error: ${error}`));
             }
           } else if (code) {
+            // Validate state parameter if expected state is set (CSRF protection)
+            if (this.expectedState) {
+              if (!receivedState) {
+                logger.error("OAuth callback missing state parameter (potential CSRF)", {
+                  has_expected_state: true
+                });
+                res.writeHead(400, SECURITY_HEADERS);
+                res.end(generateErrorHtml("invalid_state", "Missing state parameter"));
+                
+                if (this.rejectCallback) {
+                  this.rejectCallback(new Error("OAuth callback missing state parameter (potential CSRF attack)"));
+                }
+                return;
+              }
+              
+              if (!this.safeCompare(receivedState, this.expectedState)) {
+                logger.error("OAuth state mismatch (potential CSRF)", {
+                  // Don't log actual state values for security
+                  received_length: receivedState.length,
+                  expected_length: this.expectedState.length
+                });
+                res.writeHead(400, SECURITY_HEADERS);
+                res.end(generateErrorHtml("invalid_state", "State parameter mismatch"));
+                
+                if (this.rejectCallback) {
+                  this.rejectCallback(new Error("OAuth state mismatch (potential CSRF attack)"));
+                }
+                return;
+              }
+              
+              logger.debug("OAuth state validated successfully");
+            }
+            
             res.writeHead(200, SECURITY_HEADERS);
             res.end(generateSuccessHtml());
 
-            logger.info("OAuth callback received", { has_code: true });
+            logger.info("OAuth callback received", { has_code: true, state_validated: !!this.expectedState });
 
             if (this.resolveCallback) {
               this.resolveCallback(code);
@@ -201,7 +251,22 @@ export class OAuthCallbackServer {
     });
   }
 
-  async waitForCallback(timeout: number = 120000): Promise<string> {
+  /**
+   * Wait for the OAuth callback with optional state validation.
+   * 
+   * @param timeout - Timeout in milliseconds (default 120000)
+   * @param expectedState - Expected state parameter for CSRF protection
+   */
+  async waitForCallback(timeout: number = 120000, expectedState?: string): Promise<string> {
+    // Store expected state for validation in the request handler
+    this.expectedState = expectedState;
+    
+    if (expectedState) {
+      logger.debug("OAuth callback server waiting with state validation", {
+        state_length: expectedState.length
+      });
+    }
+    
     return new Promise((resolve, reject) => {
       this.resolveCallback = resolve;
       this.rejectCallback = reject;

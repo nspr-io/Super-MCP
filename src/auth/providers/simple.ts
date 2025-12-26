@@ -4,6 +4,7 @@ import { spawn } from "child_process";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { homedir } from "os";
+import { randomBytes } from "crypto";
 
 const logger = getLogger();
 
@@ -17,6 +18,7 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   private savedClientInfo?: any;
   private tokenStoragePath: string;
   private oauthPort: number;
+  private stateValue?: string;
   
   constructor(packageId: string, oauthPort: number = 5173) {
     this.packageId = packageId;
@@ -193,6 +195,30 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
     return this.codeVerifierValue;
   }
   
+  /**
+   * Returns the OAuth state parameter for CSRF protection.
+   * Generates a cryptographically random 32-byte hex string on first call,
+   * then returns the cached value for subsequent calls within the same auth flow.
+   */
+  async state(): Promise<string> {
+    if (!this.stateValue) {
+      this.stateValue = randomBytes(32).toString('hex');
+      logger.debug("Generated OAuth state parameter", {
+        package_id: this.packageId,
+        state_length: this.stateValue.length
+      });
+    }
+    return this.stateValue;
+  }
+  
+  /**
+   * Returns the stored state value without generating a new one.
+   * Used for validation in the callback server.
+   */
+  getStoredState(): string | undefined {
+    return this.stateValue;
+  }
+  
   async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' = 'all') {
     logger.info("Invalidating OAuth credentials", { 
       package_id: this.packageId,
@@ -221,6 +247,11 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
     
     if (scope === 'all' || scope === 'verifier') {
       this.codeVerifierValue = undefined;
+    }
+    
+    // Always clear state on 'all' - state is session-specific
+    if (scope === 'all') {
+      this.stateValue = undefined;
     }
   }
   

@@ -21,6 +21,7 @@ For detailed guides, see the `docs/` directory:
 |----------|-------------|
 | [Configuration Reference](docs/CONFIGURATION_REFERENCE.md) | Complete schema for all config options |
 | [Security Policy Guide](docs/SECURITY_POLICY_GUIDE.md) | Allowlist/blocklist rules, patterns, hot-reload |
+| [Security Hardening](docs/SECURITY_HARDENING.md) | Security measures, mitigations, and future work |
 | [OAuth & Authentication](docs/OAUTH_AND_AUTHENTICATION.md) | API keys, OAuth flows, token storage |
 | [Transport Modes](docs/TRANSPORT_MODES.md) | STDIO vs HTTP comparison and selection guide |
 | [Error Codes Reference](docs/ERROR_CODES_REFERENCE.md) | All error codes with causes and solutions |

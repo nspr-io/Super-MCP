@@ -135,21 +135,128 @@ class Logger {
     }
 
     const sanitized: any = {};
+    // All lowercase for case-insensitive matching
+    const sensitiveParams = new Set(['token', 'key', 'secret', 'password', 'code', 'access_token', 'refresh_token', 'client_secret', 'api_key', 'apikey']);
+    
     for (const [key, value] of Object.entries(data)) {
-      // Redact sensitive information
+      // Redact sensitive information based on key names
       if (key.toLowerCase().includes("token") || 
           key.toLowerCase().includes("secret") ||
           key.toLowerCase().includes("key") ||
           key.toLowerCase().includes("password")) {
         sanitized[key] = "[REDACTED]";
-      } else if (typeof value === "string" && (
-          value.includes("Bearer ") ||
-          value.includes("access_token") ||
-          value.includes("refresh_token"))) {
-        sanitized[key] = "[REDACTED]";
-      } else {
-        sanitized[key] = this.sanitizeData(value);
+        continue;
       }
+      
+      // Check for string values that need redaction
+      if (typeof value === "string") {
+        // Redact if contains Bearer token or explicit token strings
+        if (value.includes("Bearer ") ||
+            value.includes("access_token") ||
+            value.includes("refresh_token")) {
+          sanitized[key] = "[REDACTED]";
+          continue;
+        }
+        
+        // Check for URL-like strings and redact sensitive query params and fragments
+        // Use regex to find URLs anywhere in the string (not just at start)
+        const urlPattern = /(https?|wss?):\/\/[^\s"'<>]+/gi;
+        const urlMatches = value.match(urlPattern);
+        
+        if (urlMatches) {
+          let redactedValue = value;
+          for (const urlString of urlMatches) {
+            try {
+              const url = new URL(urlString);
+              let redacted = false;
+              
+              // Redact sensitive query parameters (case-insensitive)
+              // Iterate over actual params and check lowercase name
+              const paramsToRedact: string[] = [];
+              url.searchParams.forEach((_, paramName) => {
+                if (sensitiveParams.has(paramName.toLowerCase())) {
+                  paramsToRedact.push(paramName);
+                }
+              });
+              paramsToRedact.forEach(paramName => {
+                url.searchParams.set(paramName, '[REDACTED]');
+                redacted = true;
+              });
+              
+              // Redact sensitive fragments (e.g., #access_token=...) (case-insensitive)
+              if (url.hash) {
+                const hashContent = url.hash.slice(1); // Remove #
+                if (hashContent) {
+                  // Handle SPA-style hashes like #/callback?token=... or direct #token=...
+                  const queryStart = hashContent.indexOf('?');
+                  const hashQueryPart = queryStart >= 0 ? hashContent.slice(queryStart + 1) : hashContent;
+                  
+                  // URLSearchParams doesn't throw, so we can always try to parse
+                  const hashParams = new URLSearchParams(hashQueryPart);
+                  const hashParamsToRedact: string[] = [];
+                  let hashRedacted = false;
+                  
+                  hashParams.forEach((_, paramName) => {
+                    if (sensitiveParams.has(paramName.toLowerCase())) {
+                      hashParamsToRedact.push(paramName);
+                    }
+                  });
+                  
+                  if (hashParamsToRedact.length > 0) {
+                    hashParamsToRedact.forEach(paramName => {
+                      hashParams.set(paramName, '[REDACTED]');
+                    });
+                    // Reconstruct hash preserving path portion if present
+                    if (queryStart >= 0) {
+                      url.hash = '#' + hashContent.slice(0, queryStart + 1) + hashParams.toString();
+                    } else {
+                      url.hash = '#' + hashParams.toString();
+                    }
+                    hashRedacted = true;
+                  }
+                  
+                  // Also check for patterns like token=value without proper query format
+                  if (!hashRedacted) {
+                    const hashLower = hashContent.toLowerCase();
+                    for (const param of sensitiveParams) {
+                      if (hashLower.includes(param + '=')) {
+                        url.hash = '#[REDACTED]';
+                        hashRedacted = true;
+                        break;
+                      }
+                    }
+                  }
+                  
+                  if (hashRedacted) {
+                    redacted = true;
+                  }
+                }
+              }
+              
+              // Redact userinfo (user:password@host)
+              if (url.username || url.password) {
+                if (url.username) url.username = '[REDACTED]';
+                if (url.password) url.password = '[REDACTED]';
+                redacted = true;
+              }
+              
+              if (redacted) {
+                redactedValue = redactedValue.replace(urlString, url.toString());
+              }
+            } catch {
+              // Not a valid URL, skip redaction for this match
+            }
+          }
+          
+          if (redactedValue !== value) {
+            sanitized[key] = redactedValue;
+            continue;
+          }
+        }
+      }
+      
+      // Recursively sanitize nested objects/arrays
+      sanitized[key] = this.sanitizeData(value);
     }
     return sanitized;
   }

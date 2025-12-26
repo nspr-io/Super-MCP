@@ -16,6 +16,12 @@ const HTTP_CONCURRENCY = 5;
 
 export interface HttpMcpClientOptions {
   oauthPort?: number;
+  /**
+   * Optional pre-configured OAuth provider.
+   * If provided, this provider will be used instead of creating a new one.
+   * This allows the caller to pre-generate state for CSRF protection.
+   */
+  oauthProvider?: SimpleOAuthProvider;
 }
 
 export class HttpMcpClient implements McpClient {
@@ -28,11 +34,13 @@ export class HttpMcpClient implements McpClient {
   private oauthProvider?: OAuthClientProvider;
   private oauthPort: number;
   private requestQueue: PQueue;
+  private externalOAuthProvider?: SimpleOAuthProvider;
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
     this.packageId = packageId;
     this.config = config;
     this.oauthPort = options?.oauthPort ?? 5173;
+    this.externalOAuthProvider = options?.oauthProvider;
     
     // Request queue to limit concurrent calls to this HTTP client
     this.requestQueue = new PQueue({ concurrency: HTTP_CONCURRENCY });
@@ -50,24 +58,37 @@ export class HttpMcpClient implements McpClient {
   
   private async initializeOAuthIfNeeded(forceOAuth: boolean = false) {
     if (this.config.oauth && !this.oauthProvider) {
-      const simpleProvider = new SimpleOAuthProvider(this.packageId, this.oauthPort);
-      await simpleProvider.initialize();
+      // Use external provider if provided, otherwise create a new one
+      const simpleProvider = this.externalOAuthProvider ?? new SimpleOAuthProvider(this.packageId, this.oauthPort);
+      
+      // Only initialize if we created it (external provider should already be initialized)
+      if (!this.externalOAuthProvider) {
+        await simpleProvider.initialize();
+      }
       
       if (forceOAuth) {
         // Part B: Safety net - invalidate stale credentials on port mismatch
         // Only check when forceOAuth=true (explicit authenticate call)
         // Don't check on normal startup to avoid breaking refresh-only flows
-        const invalidated = await simpleProvider.checkAndInvalidateOnPortMismatch();
-        if (invalidated) {
-          logger.info("OAuth credentials invalidated due to port mismatch, will re-register", {
-            package_id: this.packageId,
-            oauth_port: this.oauthPort
-          });
+        // IMPORTANT: Skip this check for external providers to avoid invalidating
+        // state that was already captured by the caller (race condition fix)
+        if (!this.externalOAuthProvider) {
+          const invalidated = await simpleProvider.checkAndInvalidateOnPortMismatch();
+          if (invalidated) {
+            logger.info("OAuth credentials invalidated due to port mismatch, will re-register", {
+              package_id: this.packageId,
+              oauth_port: this.oauthPort
+            });
+          }
         }
         
         this.oauthProvider = simpleProvider;
         this.useOAuth = true;
-        logger.debug("OAuth provider initialized for browser flow", { package_id: this.packageId, oauth_port: this.oauthPort });
+        logger.debug("OAuth provider initialized for browser flow", { 
+          package_id: this.packageId, 
+          oauth_port: this.oauthPort,
+          external_provider: !!this.externalOAuthProvider
+        });
       } else {
         const tokens = await simpleProvider.tokens();
         

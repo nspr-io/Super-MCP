@@ -1,6 +1,11 @@
 import { getLogger } from "./logging.js";
+import safeRegex from "safe-regex2";
 
 const logger = getLogger();
+
+// Defense-in-depth constants for ReDoS protection
+const MAX_PATTERN_LENGTH = 500;  // Max chars for user-defined regex patterns
+const MAX_INPUT_LENGTH = 100;    // Max chars for tool/package names before .test()
 
 export interface SecurityConfig {
   // Blocklist: block tools/packages that match these patterns
@@ -79,19 +84,33 @@ export class SecurityPolicy {
   }
 
   private parsePattern(pattern: string): CompiledPattern {
+    // Defense-in-depth: Reject overly long patterns before parsing
+    if (pattern.length > MAX_PATTERN_LENGTH) {
+      throw new Error(`Pattern exceeds maximum length of ${MAX_PATTERN_LENGTH} characters`);
+    }
+
     // Check if it's a regex pattern: /pattern/flags
     const regexMatch = pattern.match(/^\/(.+)\/([gimsuy]*)$/);
     
     if (regexMatch) {
       const [, regexBody, flags] = regexMatch;
+      const regex = new RegExp(regexBody, flags);
+      
+      // ReDoS protection: validate regex is safe from catastrophic backtracking
+      if (!safeRegex(regex)) {
+        logger.error("Unsafe regex pattern rejected (potential ReDoS)", { pattern });
+        throw new Error(`Unsafe regex pattern rejected: ${pattern}`);
+      }
+      
       return {
         original: pattern,
-        regex: new RegExp(regexBody, flags),
+        regex,
         isRegex: true,
       };
     }
     
     // Exact match - escape special regex characters and match exactly
+    // Note: escaped patterns are inherently safe (no quantifiers or alternation)
     const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return {
       original: pattern,
@@ -101,8 +120,23 @@ export class SecurityPolicy {
   }
 
   private matchesAnyPattern(value: string, patterns: CompiledPattern[]): CompiledPattern | null {
+    // Defense-in-depth: Truncate overly long input to prevent ReDoS
+    // Tool/package names should be naturally short; if longer, truncate for safety
+    if (value.length > MAX_INPUT_LENGTH) {
+      logger.debug("Input truncated for security pattern matching", {
+        original_length: value.length,
+        truncated_to: MAX_INPUT_LENGTH,
+      });
+    }
+    const safeValue = value.length > MAX_INPUT_LENGTH ? value.slice(0, MAX_INPUT_LENGTH) : value;
+    
     for (const pattern of patterns) {
-      if (pattern.regex.test(value)) {
+      // Reset lastIndex to avoid statefulness issues with g/y flags
+      // Repeated .test() calls on regexes with g or y can alternate results
+      if (pattern.regex.global || pattern.regex.sticky) {
+        pattern.regex.lastIndex = 0;
+      }
+      if (pattern.regex.test(safeValue)) {
         return pattern;
       }
     }

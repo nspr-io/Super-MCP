@@ -91,6 +91,8 @@ export async function handleAuthenticate(
   try {
     let callbackServer: any = null;
     let oauthPort = 5173;
+    let oauthProvider: SimpleOAuthProvider | undefined;
+    let oauthState: string | undefined;
     
     if (wait_for_completion) {
       try {
@@ -137,6 +139,15 @@ export async function handleAuthenticate(
       const { OAuthCallbackServer } = await import("../auth/callbackServer.js");
       callbackServer = new OAuthCallbackServer(oauthPort);
       
+      // Create OAuth provider early and generate state for CSRF protection
+      oauthProvider = new SimpleOAuthProvider(package_id, oauthPort);
+      await oauthProvider.initialize();
+      oauthState = await oauthProvider.state();
+      logger.info("OAuth state generated for CSRF protection", { 
+        package_id, 
+        state_length: oauthState.length 
+      });
+      
       try {
         await callbackServer.start();
         logger.info("OAuth callback server started", { package_id, oauth_port: oauthPort });
@@ -170,7 +181,10 @@ export async function handleAuthenticate(
     
     logger.info("Creating HTTP client with OAuth enabled", { package_id, oauth_port: oauthPort });
     const { HttpMcpClient } = await import("../clients/httpClient.js");
-    const httpClient = new HttpMcpClient(package_id, pkg, { oauthPort });
+    const httpClient = new HttpMcpClient(package_id, pkg, { 
+      oauthPort,
+      oauthProvider  // Pass pre-configured provider with state already generated
+    });
     
     logger.info("Triggering OAuth connection", { package_id });
     
@@ -187,7 +201,8 @@ export async function handleAuthenticate(
           });
         });
         
-        const callbackPromise = callbackServer.waitForCallback(60000);
+        // Wait for callback with state validation for CSRF protection
+        const callbackPromise = callbackServer.waitForCallback(60000, oauthState);
         
         const authCode = await callbackPromise;
         logger.info("OAuth callback received", { package_id, has_code: !!authCode });
