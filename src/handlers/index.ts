@@ -5,3 +5,4 @@ export { handleHealthCheckAll } from "./healthCheck.js";
 export { handleAuthenticate } from "./authenticate.js";
 export { handleGetHelp, getTopicHelp, getErrorHelp, getPackageHelp } from "./getHelp.js";
 export { handleRestartPackage } from "./restartPackage.js";
+export { handleSearchTools, invalidateSearchCache } from "./searchTools.js";

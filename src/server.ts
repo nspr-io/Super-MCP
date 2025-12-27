@@ -17,6 +17,7 @@ import {
   handleAuthenticate,
   handleGetHelp,
   handleRestartPackage,
+  handleSearchTools,
 } from "./handlers/index.js";
 
 const logger = getLogger();
@@ -266,6 +267,40 @@ export async function startServer(options: {
               required: ["package_id"],
             },
           },
+          {
+            name: "search_tools",
+            description: "Search across all tools using natural language. Returns the most relevant tools matching your query with full schemas, ready to use. Much faster than browsing packages manually. Use this when you know what you want to do but not which tool to use.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                query: {
+                  type: "string",
+                  description: "Natural language description of what you want to do (e.g., 'send a slack message', 'read a file', 'create calendar event')",
+                },
+                limit: {
+                  type: "number",
+                  description: "Maximum number of results to return",
+                  default: 5,
+                },
+                threshold: {
+                  type: "number",
+                  description: "Minimum relevance score (0-1) for results",
+                  default: 0,
+                },
+                packages: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Optional: limit search to specific packages",
+                },
+              },
+              required: ["query"],
+              examples: [
+                { query: "send a message to slack" },
+                { query: "read file contents", limit: 3 },
+                { query: "calendar events", packages: ["GoogleWorkspace"] },
+              ],
+            },
+          },
         ],
       };
     });
@@ -295,6 +330,9 @@ export async function startServer(options: {
 
           case "restart_package":
             return await handleRestartPackage(args as any, registry);
+
+          case "search_tools":
+            return await handleSearchTools(args as any, registry, catalog);
 
           default:
             throw {
@@ -380,6 +418,64 @@ export async function startServer(options: {
 
       app.get("/health", (_req, res) => {
         res.json({ status: "ok", transport: "http" });
+      });
+
+      // REST API endpoint for bulk tool export (used by Rebel for tool indexing)
+      // Returns all tools from all packages with etag for cache invalidation
+      app.get("/api/tools", async (_req, res) => {
+        try {
+          const allTools: Array<{
+            package_id: string;
+            package_name: string;
+            tool_id: string;
+            name: string;
+            description: string;
+            summary?: string;
+            input_schema?: unknown;
+          }> = [];
+
+          for (const pkg of registry.getPackages()) {
+            try {
+              await catalog.ensurePackageLoaded(pkg.id);
+              const tools = await catalog.buildToolInfos(pkg.id, {
+                summarize: true,
+                include_schemas: true,
+              });
+              for (const tool of tools) {
+                allTools.push({
+                  package_id: pkg.id,
+                  package_name: pkg.name || pkg.id,
+                  tool_id: tool.tool_id,
+                  name: tool.name,
+                  description: tool.summary || "",
+                  summary: tool.summary,
+                  input_schema: tool.schema,
+                });
+              }
+            } catch (pkgError) {
+              logger.warn("Failed to load tools for package", {
+                package_id: pkg.id,
+                error: pkgError instanceof Error ? pkgError.message : String(pkgError),
+              });
+              // Continue with other packages
+            }
+          }
+
+          const etag = catalog.etag();
+          res.setHeader("ETag", etag);
+          res.json({
+            tools: allTools,
+            etag,
+            tool_count: allTools.length,
+            package_count: registry.getPackages().length,
+            generated_at: new Date().toISOString(),
+          });
+        } catch (error) {
+          logger.error("Failed to build tool catalog", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          res.status(500).json({ error: "Failed to build tool catalog" });
+        }
       });
 
       const mcpHandler = async (req: any, res: any) => {
