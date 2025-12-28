@@ -5,6 +5,15 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2025-12-27
+
+### Added
+- **Tool search endpoint**: New `GET /api/tools` REST endpoint for bulk tool export with ETag support for efficient caching
+- **search_tools MCP tool**: BM25 keyword search over all available tools, returning relevance scores, schemas, and package info. Enables semantic tool discovery in client applications.
+
+### Changed
+- Updated `@modelcontextprotocol/sdk` to 1.25.1 (backwards-compatible spec type adjustments)
+
 ## [2.3.0] - 2025-12-22
 
 ### Added
