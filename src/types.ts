@@ -61,6 +61,23 @@ export interface PackageConfig {
   timeout?: number; // Tool execution timeout in milliseconds
 }
 
+/**
+ * Represents a package that was skipped during validation.
+ * Used when gracefully handling invalid config entries.
+ */
+export interface SkippedPackage {
+  id: string;
+  reason: string;
+}
+
+/**
+ * Result of config validation - returns valid packages and any skipped entries.
+ */
+export interface ValidationResult {
+  valid: PackageConfig[];
+  skipped: SkippedPackage[];
+}
+
 export interface AuthConfig {
   mode: "oauth2";
   method: "device_code" | "authorization_code_pkce";

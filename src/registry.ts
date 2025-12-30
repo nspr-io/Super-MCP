@@ -1,6 +1,6 @@
 import * as fs from "fs/promises";
 import * as path from "path";
-import { SuperMcpConfig, PackageConfig, McpClient, StandardServerConfig, ExtendedServerConfig } from "./types.js";
+import { SuperMcpConfig, PackageConfig, McpClient, StandardServerConfig, ExtendedServerConfig, SkippedPackage, ValidationResult } from "./types.js";
 import { StdioMcpClient } from "./clients/stdioClient.js";
 import { HttpMcpClient } from "./clients/httpClient.js";
 import { getLogger } from "./logging.js";
@@ -377,8 +377,19 @@ export class PackageRegistry {
       logger.info("Security policy active", secSummary);
     }
 
-    // Validate normalized config
-    PackageRegistry.validateConfig(registry.packages);
+    // Validate normalized config - skip invalid entries instead of throwing
+    const validationResult = PackageRegistry.validateConfig(registry.packages);
+    registry.packages = validationResult.valid;
+    
+    // Emit skipped packages to stderr as structured JSON for consumers (e.g., Rebel) to parse
+    if (validationResult.skipped.length > 0) {
+      const skippedJson = JSON.stringify({ packages: validationResult.skipped });
+      console.error(`SUPER_MCP_SKIPPED_PACKAGES:${skippedJson}`);
+      logger.warn("Some MCP packages were skipped due to validation errors", {
+        skipped_count: validationResult.skipped.length,
+        skipped_packages: validationResult.skipped
+      });
+    }
 
     // Check for placeholder values
     PackageRegistry.checkForPlaceholders(registry.packages);
@@ -387,6 +398,7 @@ export class PackageRegistry {
       config_count: loadOrder.length,
       root_configs: configPaths.length,
       total_packages: registry.packages.length,
+      skipped_packages: validationResult.skipped.length,
       packages: registry.packages.map(p => ({ id: p.id, transport: p.transport })),
       load_order: loadOrder
     });
@@ -394,59 +406,120 @@ export class PackageRegistry {
     return registry;
   }
 
-  private static validateConfig(packages: PackageConfig[]): void {
+  /**
+   * Validates package configurations and returns valid packages with a list of skipped entries.
+   * Instead of throwing on the first invalid entry, this collects all validation errors
+   * and skips invalid packages gracefully.
+   * 
+   * NOTE: If modifying validation rules here, consider updating corresponding validation
+   * in consuming applications (e.g., Rebel's mcpConfigManager.ts) to keep rules in sync.
+   * 
+   * Validation rules:
+   * - id: required, must be non-empty string
+   * - name: required, must be non-empty string (defaults to id in normalizeConfig)
+   * - transport: must be "stdio" or "http"
+   * - stdio transport: command is required and must be non-empty string
+   * - http transport: base_url is required and must be a valid URL
+   * - visibility: if present, must be "default" or "hidden"
+   */
+  private static validateConfig(packages: PackageConfig[]): ValidationResult {
+    const valid: PackageConfig[] = [];
+    const skipped: SkippedPackage[] = [];
+
     if (!Array.isArray(packages)) {
-      throw new Error("Invalid configuration: packages must be an array");
+      logger.error("Invalid configuration: packages must be an array");
+      return { valid: [], skipped: [] };
     }
 
     // Allow empty configs - super-mcp can run without any MCPs configured
     if (packages.length === 0) {
       logger.info("No MCP servers configured - super-mcp running in minimal mode");
-      return;
+      return { valid: [], skipped: [] };
     }
 
     const seenIds = new Set<string>();
     
     for (const pkg of packages) {
+      // Validate id first - we need it for error messages and duplicate detection
       if (!pkg.id || typeof pkg.id !== "string") {
-        throw new Error("Invalid package: id is required and must be a string");
+        const unknownId = `unknown-${skipped.length}`;
+        const reason = "id is required and must be a non-empty string";
+        logger.warn(`Skipping invalid package: ${reason}`, { package_id: unknownId });
+        skipped.push({ id: unknownId, reason });
+        continue;
       }
 
-      if (seenIds.has(pkg.id)) {
-        throw new Error(`Duplicate package ID: ${pkg.id}`);
+      const pkgId = pkg.id;
+
+      // Check for duplicates (batch-only check, not in validateSinglePackage)
+      if (seenIds.has(pkgId)) {
+        const reason = `Duplicate package ID: ${pkgId}`;
+        logger.warn(`Skipping invalid package: ${reason}`, { package_id: pkgId });
+        skipped.push({ id: pkgId, reason });
+        continue;
       }
-      seenIds.add(pkg.id);
+      seenIds.add(pkgId);
 
-      if (!pkg.name || typeof pkg.name !== "string") {
-        throw new Error(`Invalid package ${pkg.id}: name is required and must be a string`);
-      }
-
-      if (pkg.transport !== "stdio" && pkg.transport !== "http") {
-        throw new Error(`Invalid package ${pkg.id}: transport must be "stdio" or "http"`);
-      }
-
-      if (pkg.transport === "stdio") {
-        if (!pkg.command || typeof pkg.command !== "string") {
-          throw new Error(`Invalid stdio package ${pkg.id}: command is required and must be a string`);
-        }
-      }
-
-      if (pkg.transport === "http") {
-        if (!pkg.base_url || typeof pkg.base_url !== "string") {
-          throw new Error(`Invalid http package ${pkg.id}: base_url is required and must be a string`);
-        }
-
-        try {
-          new URL(pkg.base_url);
-        } catch {
-          throw new Error(`Invalid http package ${pkg.id}: base_url must be a valid URL`);
-        }
+      // Use shared validation helper for remaining field checks
+      const fieldError = PackageRegistry.validatePackageFields(pkg);
+      if (fieldError) {
+        logger.warn(`Skipping invalid package: ${fieldError}`, { package_id: pkgId });
+        skipped.push({ id: pkgId, reason: fieldError });
+        continue;
       }
 
-      if (pkg.visibility && pkg.visibility !== "default" && pkg.visibility !== "hidden") {
-        throw new Error(`Invalid package ${pkg.id}: visibility must be "default" or "hidden"`);
+      // Package passed all validation
+      valid.push(pkg);
+    }
+
+    return { valid, skipped };
+  }
+
+  /**
+   * Validates package fields (excluding id, which must be checked separately for batch duplicate detection).
+   * This is the shared validation logic used by both validateConfig() and validateSinglePackage().
+   * Returns null if valid, or the error reason if invalid.
+   * 
+   * NOTE: If modifying these rules, also update the JSDoc on validateConfig() above.
+   */
+  private static validatePackageFields(pkg: PackageConfig): string | null {
+    if (!pkg.name || typeof pkg.name !== "string") {
+      return "name is required and must be a non-empty string";
+    }
+    if (pkg.transport !== "stdio" && pkg.transport !== "http") {
+      return `transport must be "stdio" or "http", got "${pkg.transport}"`;
+    }
+    if (pkg.transport === "stdio" && (!pkg.command || typeof pkg.command !== "string")) {
+      return "command is required and must be a non-empty string for stdio transport";
+    }
+    if (pkg.transport === "http") {
+      if (!pkg.base_url || typeof pkg.base_url !== "string") {
+        return "base_url is required and must be a non-empty string for http transport";
+      }
+      try {
+        new URL(pkg.base_url);
+      } catch {
+        return `base_url must be a valid URL, got "${pkg.base_url}"`;
       }
     }
+    if (pkg.visibility && pkg.visibility !== "default" && pkg.visibility !== "hidden") {
+      return `visibility must be "default" or "hidden", got "${pkg.visibility}"`;
+    }
+    return null;
+  }
+  
+  /**
+   * Validates a single package configuration.
+   * Used by restartPackage to validate re-normalized packages.
+   * Returns null if valid, or the error reason if invalid.
+   */
+  private static validateSinglePackage(pkg: PackageConfig): string | null {
+    // Check id separately (not in shared helper since batch validation needs different handling)
+    if (!pkg.id || typeof pkg.id !== "string") {
+      return "id is required and must be a non-empty string";
+    }
+    // Use shared validation for remaining fields
+    return PackageRegistry.validatePackageFields(pkg);
   }
 
   private static checkForPlaceholders(packages: PackageConfig[]): void {
@@ -684,6 +757,22 @@ export class PackageRegistry {
     const serverConfig = this.config.mcpServers?.[packageId];
     if (serverConfig) {
       const freshPkg = this.normalizeServerEntry(packageId, serverConfig);
+      
+      // Validate the fresh package before accepting it
+      const validationError = PackageRegistry.validateSinglePackage(freshPkg);
+      if (validationError) {
+        // Remove the invalid package from the list
+        this.packages.splice(pkgIndex, 1);
+        logger.warn("Package became invalid after restart - removed from registry", {
+          package_id: packageId,
+          reason: validationError
+        });
+        return {
+          success: false,
+          message: `Package '${packageId}' is now invalid: ${validationError}. It has been removed from the registry.`
+        };
+      }
+      
       this.packages[pkgIndex] = freshPkg;
       logger.info("Package config refreshed from raw config", { package_id: packageId });
     } else {

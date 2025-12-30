@@ -68,6 +68,27 @@ When using HTTP transport:
 - `type: "http"` — Streamable HTTP transport (recommended, MCP spec 2025-03-26)
 - `type: "sse"` — HTTP+SSE transport (deprecated as of MCP spec 2025-03-26)
 
+### Validation Behavior
+
+Super-MCP validates each server entry on startup. Invalid entries are **skipped with warnings** rather than causing a complete failure:
+
+**Required fields:**
+- `name` (or server ID key) must be a non-empty string
+- `command` is required for stdio transport (must be non-empty string)
+- `url` is required for http transport (must be valid URL)
+
+**Optional field validation:**
+- `visibility` must be `"default"` or `"hidden"` if specified
+
+**Graceful degradation:** If an entry fails validation, Super-MCP logs a warning to stderr and continues loading other servers. This prevents one misconfigured server from breaking all tools.
+
+**Structured output for consuming apps:** When servers are skipped, Super-MCP emits a structured line to stderr:
+```
+SUPER_MCP_SKIPPED_PACKAGES:{"packages":[{"id":"server-name","reason":"..."}]}
+```
+
+See `src/registry.ts` → `validatePackageFields()` for the canonical validation rules.
+
 ### Example: Stdio Server
 
 ```json
