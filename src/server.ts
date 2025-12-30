@@ -440,6 +440,7 @@ export async function startServer(options: {
               const tools = await catalog.buildToolInfos(pkg.id, {
                 summarize: true,
                 include_schemas: true,
+                include_descriptions: true,
               });
               for (const tool of tools) {
                 allTools.push({
@@ -447,7 +448,7 @@ export async function startServer(options: {
                   package_name: pkg.name || pkg.id,
                   tool_id: tool.tool_id,
                   name: tool.name,
-                  description: tool.summary || "",
+                  description: tool.description || tool.summary || "",
                   summary: tool.summary,
                   input_schema: tool.schema,
                 });

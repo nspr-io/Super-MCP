@@ -212,6 +212,7 @@ export class Catalog {
     options: {
       summarize?: boolean;
       include_schemas?: boolean;
+      include_descriptions?: boolean;
     } = {}
   ): Promise<ToolInfo[]> {
     const tools = await this.getPackageTools(packageId);
@@ -225,6 +226,7 @@ export class Catalog {
         package_id: packageId,
         tool_id: namespacedId,
         name: namespacedId,
+        description: options.include_descriptions ? cachedTool.tool.description : undefined,
         summary: options.summarize ? cachedTool.summary : undefined,
         args_skeleton: options.summarize ? cachedTool.argsSkeleton : undefined,
         schema_hash: cachedTool.schemaHash,

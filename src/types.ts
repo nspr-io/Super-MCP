@@ -86,6 +86,7 @@ export interface ToolInfo {
   package_id: string;
   tool_id: string;
   name: string;
+  description?: string;
   summary?: string;
   args_skeleton?: any;
   schema_hash: string;
