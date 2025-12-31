@@ -404,7 +404,7 @@ To update: `npm update -g super-mcp-router`
 ### Clone and Build from Source (For Development)
 
 ```bash
-git clone https://github.com/JoshuaWohle/Super-MCP.git
+git clone https://github.com/nspr-io/Super-MCP.git
 cd Super-MCP
 npm install
 npm run build

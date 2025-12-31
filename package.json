@@ -37,12 +37,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/JoshuaWohle/Super-MCP.git"
+    "url": "git+https://github.com/nspr-io/Super-MCP.git"
   },
   "bugs": {
-    "url": "https://github.com/JoshuaWohle/Super-MCP/issues"
+    "url": "https://github.com/nspr-io/Super-MCP/issues"
   },
-  "homepage": "https://github.com/JoshuaWohle/Super-MCP#readme",
+  "homepage": "https://github.com/nspr-io/Super-MCP#readme",
   "engines": {
     "node": ">=18.0.0"
   },

@@ -22,7 +22,7 @@ async function ensureSetup(): Promise<string> {
     // Create empty config if it doesn't exist
     if (!fs.existsSync(configFile)) {
       const emptyConfig = {
-        "$schema": "https://raw.githubusercontent.com/JoshuaWohle/Super-MCP/main/super-mcp-config.schema.json",
+        "$schema": "https://raw.githubusercontent.com/nspr-io/Super-MCP/main/super-mcp-config.schema.json",
         "mcpServers": {}
       };
       fs.writeFileSync(configFile, JSON.stringify(emptyConfig, null, 2), { mode: 0o600 });
