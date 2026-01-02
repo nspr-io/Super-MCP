@@ -41,20 +41,20 @@ jobs:
             COMMITS+=$(printf "<${REPO_URL}/commit/${sha}|${SHORT_SHA}> - %s" "$MSG")
           done <<< "$SHAS"
 
-          # Build message
+          # Build message - extract repo name without org
+          REPO_NAME="${{ github.repository }}"
+          REPO_NAME="${REPO_NAME#*/}"
           if [[ "$COMMIT_COUNT" -eq 1 ]]; then
-            HEADER="${COMMIT_COUNT} new commit pushed to *${{ github.ref_name }}* by ${PUSHER}"
+            HEADER="${COMMIT_COUNT} new commit pushed to *${{ github.ref_name }}* on <${REPO_URL}|${REPO_NAME}> by ${PUSHER}"
           else
-            HEADER="${COMMIT_COUNT} new commits pushed to *${{ github.ref_name }}* by ${PUSHER}"
+            HEADER="${COMMIT_COUNT} new commits pushed to *${{ github.ref_name }}* on <${REPO_URL}|${REPO_NAME}> by ${PUSHER}"
           fi
-          FOOTER="<${REPO_URL}|${{ github.repository }}>"
 
           # Use jq to properly escape the message for JSON
           PAYLOAD=$(jq -n \
             --arg header "$HEADER" \
             --arg commits "$COMMITS" \
-            --arg footer "$FOOTER" \
-            '{text: ($header + "\n" + $commits + "\n" + $footer)}')
+            '{text: ($header + "\n" + $commits)}')
 
           curl -X POST -H 'Content-type: application/json' \
             --data "$PAYLOAD" \
