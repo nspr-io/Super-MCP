@@ -1,0 +1,61 @@
+name: Push Commit Notifications
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get commit details and notify Slack
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          BEFORE="${{ github.event.before }}"
+          REPO_URL="https://github.com/${{ github.repository }}"
+          PUSHER="${{ github.actor }}"
+
+          # Handle first push (before is all zeros)
+          if [[ "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            SHAS=$(git log --format="%H" -10 ${{ github.sha }})
+          else
+            SHAS=$(git log --format="%H" ${BEFORE}..${{ github.sha }} | tac)
+          fi
+
+          COMMIT_COUNT=$(echo "$SHAS" | grep -c .)
+
+          # Build commit list with links
+          COMMITS=""
+          while IFS= read -r sha; do
+            SHORT_SHA="${sha:0:7}"
+            MSG=$(git log -1 --format="%s" "$sha")
+            if [[ -n "$COMMITS" ]]; then
+              COMMITS+=$'\n'
+            fi
+            COMMITS+=$(printf "<${REPO_URL}/commit/${sha}|${SHORT_SHA}> - %s" "$MSG")
+          done <<< "$SHAS"
+
+          # Build message
+          if [[ "$COMMIT_COUNT" -eq 1 ]]; then
+            HEADER="${COMMIT_COUNT} new commit pushed to *${{ github.ref_name }}* by ${PUSHER}"
+          else
+            HEADER="${COMMIT_COUNT} new commits pushed to *${{ github.ref_name }}* by ${PUSHER}"
+          fi
+          FOOTER="<${REPO_URL}|${{ github.repository }}>"
+
+          # Use jq to properly escape the message for JSON
+          PAYLOAD=$(jq -n \
+            --arg header "$HEADER" \
+            --arg commits "$COMMITS" \
+            --arg footer "$FOOTER" \
+            '{text: ($header + "\n" + $commits + "\n" + $footer)}')
+
+          curl -X POST -H 'Content-type: application/json' \
+            --data "$PAYLOAD" \
+            "$SLACK_WEBHOOK"
