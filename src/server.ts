@@ -9,6 +9,7 @@ import { Catalog } from "./catalog.js";
 import { getValidator } from "./validator.js";
 import { getLogger } from "./logging.js";
 import { ConfigWatcher } from "./configWatcher.js";
+import { getSecurityPolicy } from "./security.js";
 import {
   handleListToolPackages,
   handleListTools,
@@ -422,8 +423,10 @@ export async function startServer(options: {
 
       // REST API endpoint for bulk tool export (used by Rebel for tool indexing)
       // Returns all tools from all packages with etag for cache invalidation
+      // Also includes user-disabled status for tools
       app.get("/api/tools", async (_req, res) => {
         try {
+          const securityPolicy = getSecurityPolicy();
           const allTools: Array<{
             package_id: string;
             package_name: string;
@@ -432,6 +435,9 @@ export async function startServer(options: {
             description: string;
             summary?: string;
             input_schema?: unknown;
+            blocked?: boolean;
+            blocked_reason?: string;
+            user_disabled?: boolean;
           }> = [];
 
           for (const pkg of registry.getPackages()) {
@@ -443,7 +449,16 @@ export async function startServer(options: {
                 include_descriptions: true,
               });
               for (const tool of tools) {
-                allTools.push({
+                // Extract raw tool name for checking
+                const rawToolId = tool.tool_id.includes('__')
+                  ? tool.tool_id.split('__').slice(1).join('__')
+                  : tool.tool_id;
+                
+                // Check security policy
+                const blockCheck = securityPolicy.isToolBlocked(pkg.id, rawToolId);
+                const isUserDisabled = securityPolicy.isUserDisabled(pkg.id, rawToolId);
+                
+                const toolEntry: typeof allTools[0] = {
                   package_id: pkg.id,
                   package_name: pkg.name || pkg.id,
                   tool_id: tool.tool_id,
@@ -451,7 +466,19 @@ export async function startServer(options: {
                   description: tool.description || tool.summary || "",
                   summary: tool.summary,
                   input_schema: tool.schema,
-                });
+                };
+                
+                // Security-blocked takes precedence
+                if (blockCheck.blocked) {
+                  toolEntry.blocked = true;
+                  toolEntry.blocked_reason = blockCheck.reason;
+                } else if (isUserDisabled) {
+                  toolEntry.blocked = true;
+                  toolEntry.blocked_reason = "Disabled by user";
+                  toolEntry.user_disabled = true;
+                }
+                
+                allTools.push(toolEntry);
               }
             } catch (pkgError) {
               logger.warn("Failed to load tools for package", {
@@ -462,13 +489,20 @@ export async function startServer(options: {
             }
           }
 
-          const etag = catalog.etag();
-          res.setHeader("ETag", etag);
+          // Include user-disabled hash in ETag to invalidate cache when user-disabled changes
+          // Use content hash (not just count) so swapping disabled tools invalidates cache
+          const userDisabledSummary = securityPolicy.getUserDisabledSummary();
+          const userDisabledHash = securityPolicy.getUserDisabledHash();
+          const baseEtag = catalog.etag();
+          const combinedEtag = `"${baseEtag.replace(/"/g, '')}-ud${userDisabledHash}"`;
+          
+          res.setHeader("ETag", combinedEtag);
           res.json({
             tools: allTools,
-            etag,
+            etag: combinedEtag,
             tool_count: allTools.length,
             package_count: registry.getPackages().length,
+            user_disabled_count: userDisabledSummary.totalDisabled,
             generated_at: new Date().toISOString(),
           });
         } catch (error) {

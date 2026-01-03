@@ -151,18 +151,36 @@ export async function handleSearchTools(
     const normalizedScore = maxScore > 0 ? rawScore / maxScore : 0;
     if (normalizedScore < threshold) continue;
 
-    // Check if tool is blocked
+    // Check if tool is blocked by security or user-disabled
     const rawToolId = toolId.includes("__")
       ? toolId.split("__").slice(1).join("__")
       : toolId;
     const blockCheck = securityPolicy.isToolBlocked(tool.package_id!, rawToolId);
+    const isUserDisabled = securityPolicy.isUserDisabled(tool.package_id!, rawToolId);
 
-    results.push({
-      ...tool,
-      relevance_score: Math.round(normalizedScore * 100) / 100,
-      blocked: blockCheck.blocked,
-      blocked_reason: blockCheck.blocked ? blockCheck.reason : undefined,
-    });
+    // Build result with appropriate blocked/userDisabled flags
+    // Security-blocked takes precedence over user-disabled
+    if (blockCheck.blocked) {
+      results.push({
+        ...tool,
+        relevance_score: Math.round(normalizedScore * 100) / 100,
+        blocked: true,
+        blocked_reason: blockCheck.reason,
+      });
+    } else if (isUserDisabled) {
+      results.push({
+        ...tool,
+        relevance_score: Math.round(normalizedScore * 100) / 100,
+        blocked: true,
+        blocked_reason: "Disabled by user",
+        user_disabled: true,
+      });
+    } else {
+      results.push({
+        ...tool,
+        relevance_score: Math.round(normalizedScore * 100) / 100,
+      });
+    }
 
     if (results.length >= limit) break;
   }

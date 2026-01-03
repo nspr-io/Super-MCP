@@ -56,6 +56,19 @@ export async function handleUseTool(
     };
   }
 
+  // Check if tool is disabled by user preference (separate from security policy)
+  if (securityPolicy.isUserDisabled(package_id, tool_id)) {
+    logger.warn("Blocked attempt to use user-disabled tool", {
+      package_id,
+      tool_id,
+    });
+    throw {
+      code: ERROR_CODES.TOOL_BLOCKED,
+      message: `Tool '${package_id}__${tool_id}' is disabled by user preference. Re-enable it in Settings to use.`,
+      data: { package_id, tool_id, blocked_reason: "Disabled by user", user_disabled: true },
+    };
+  }
+
   const packageConfig = registry.getPackage(package_id);
   if (!packageConfig) {
     throw {

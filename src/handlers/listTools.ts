@@ -38,7 +38,7 @@ export async function handleListTools(
     include_schemas,
   });
 
-  // Annotate tools with security blocked status
+  // Annotate tools with security blocked status and user-disabled status
   const securityPolicy = getSecurityPolicy();
   const annotatedTools: ToolInfo[] = toolInfos.map(tool => {
     // Extract the raw tool name (without package prefix) for checking
@@ -46,12 +46,33 @@ export async function handleListTools(
       ? tool.tool_id.split('__').slice(1).join('__')
       : tool.tool_id;
     
+    // Check security policy first (takes precedence)
     const blockCheck = securityPolicy.isToolBlocked(package_id, rawToolId);
-    return {
-      ...tool,
-      blocked: blockCheck.blocked,
-      blocked_reason: blockCheck.blocked ? blockCheck.reason : undefined,
-    };
+    
+    // Check user-disabled status (separate from security policy)
+    const isUserDisabled = securityPolicy.isUserDisabled(package_id, rawToolId);
+    
+    // Security-blocked takes precedence over user-disabled
+    if (blockCheck.blocked) {
+      return {
+        ...tool,
+        blocked: true,
+        blocked_reason: blockCheck.reason,
+        // Do NOT set user_disabled for security-blocked tools
+      };
+    }
+    
+    // User-disabled: set both blocked and user_disabled
+    if (isUserDisabled) {
+      return {
+        ...tool,
+        blocked: true,
+        blocked_reason: "Disabled by user",
+        user_disabled: true,
+      };
+    }
+    
+    return tool;
   });
 
   const startIndex = page_token ? 

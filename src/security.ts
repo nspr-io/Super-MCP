@@ -40,6 +40,10 @@ export class SecurityPolicy {
   private blockedPackagePatterns: CompiledPattern[] = [];
   private allowedToolPatterns: CompiledPattern[] = [];
   private allowedPackagePatterns: CompiledPattern[] = [];
+  
+  // User-disabled tools per server (separate from security policy)
+  // Key: serverId, Value: Set of short tool names
+  private userDisabledToolsByServer: Map<string, Set<string>> = new Map();
 
   constructor(config: SecurityConfig = {}) {
     this.config = config;
@@ -252,6 +256,88 @@ export class SecurityPolicy {
    */
   getConfig(): SecurityConfig {
     return { ...this.config };
+  }
+
+  /**
+   * Set user-disabled tools by server.
+   * @param disabledByServer Record mapping server IDs to arrays of disabled tool names (short names)
+   */
+  setUserDisabledTools(disabledByServer: Record<string, string[]>): void {
+    this.userDisabledToolsByServer.clear();
+    
+    for (const [serverId, toolNames] of Object.entries(disabledByServer)) {
+      if (Array.isArray(toolNames) && toolNames.length > 0) {
+        this.userDisabledToolsByServer.set(serverId, new Set(toolNames));
+      }
+    }
+    
+    const totalDisabled = Array.from(this.userDisabledToolsByServer.values())
+      .reduce((sum, set) => sum + set.size, 0);
+    
+    if (totalDisabled > 0) {
+      logger.info("User-disabled tools configured", {
+        server_count: this.userDisabledToolsByServer.size,
+        total_disabled_tools: totalDisabled,
+      });
+    }
+  }
+
+  /**
+   * Check if a tool is disabled by user preference (not security policy).
+   * @param serverId The server/package ID
+   * @param toolName The short tool name (e.g., "delete_file", not "filesystem__delete_file")
+   * @returns true if the tool is user-disabled
+   */
+  isUserDisabled(serverId: string, toolName: string): boolean {
+    const disabledTools = this.userDisabledToolsByServer.get(serverId);
+    return disabledTools?.has(toolName) ?? false;
+  }
+
+  /**
+   * Get all user-disabled tools for a specific server.
+   * @param serverId The server/package ID
+   * @returns Array of disabled tool names, or empty array if none
+   */
+  getUserDisabledTools(serverId: string): string[] {
+    const disabledTools = this.userDisabledToolsByServer.get(serverId);
+    return disabledTools ? Array.from(disabledTools) : [];
+  }
+
+  /**
+   * Get a summary of user-disabled tools for logging.
+   */
+  getUserDisabledSummary(): { serverCount: number; totalDisabled: number } {
+    const totalDisabled = Array.from(this.userDisabledToolsByServer.values())
+      .reduce((sum, set) => sum + set.size, 0);
+    return {
+      serverCount: this.userDisabledToolsByServer.size,
+      totalDisabled,
+    };
+  }
+
+  /**
+   * Get a deterministic hash of user-disabled tools for ETag generation.
+   * Returns a short hash string that changes when any disabled tool changes.
+   */
+  getUserDisabledHash(): string {
+    if (this.userDisabledToolsByServer.size === 0) {
+      return "0";
+    }
+    // Build sorted representation: "serverId1:tool1,tool2;serverId2:tool3"
+    const sortedServers = Array.from(this.userDisabledToolsByServer.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([serverId, tools]) => {
+        const sortedTools = Array.from(tools).sort().join(',');
+        return `${serverId}:${sortedTools}`;
+      })
+      .join(';');
+    // Simple hash function (djb2)
+    let hash = 5381;
+    for (let i = 0; i < sortedServers.length; i++) {
+      hash = ((hash << 5) + hash) + sortedServers.charCodeAt(i);
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(36);
   }
 
   /**

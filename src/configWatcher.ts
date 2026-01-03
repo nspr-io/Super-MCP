@@ -84,12 +84,21 @@ export class ConfigWatcher {
     logger.info("Reloading security configuration...");
     
     try {
-      const securityConfig = await this.loadMergedSecurityConfig();
+      const { securityConfig, userDisabledToolsByServer } = await this.loadMergedConfig();
       const newPolicy = new SecurityPolicy(securityConfig);
+      
+      // Set user-disabled tools on the new policy
+      newPolicy.setUserDisabledTools(userDisabledToolsByServer);
+      
       setSecurityPolicy(newPolicy);
       
       const summary = newPolicy.getSummary();
-      logger.info("Security policy reloaded successfully", summary);
+      const userDisabledSummary = newPolicy.getUserDisabledSummary();
+      logger.info("Security policy reloaded successfully", {
+        ...summary,
+        user_disabled_servers: userDisabledSummary.serverCount,
+        user_disabled_tools: userDisabledSummary.totalDisabled,
+      });
     } catch (error) {
       logger.error("Failed to reload security config, keeping existing policy", {
         error: error instanceof Error ? error.message : String(error),
@@ -140,11 +149,18 @@ export class ConfigWatcher {
     }
   }
 
-  private async loadMergedSecurityConfig(): Promise<SecurityConfig> {
+  /**
+   * Load merged security config AND user-disabled tools from all config files.
+   */
+  private async loadMergedConfig(): Promise<{
+    securityConfig: SecurityConfig;
+    userDisabledToolsByServer: Record<string, string[]>;
+  }> {
     const mergedSecurity: SecurityConfig = {};
+    const mergedUserDisabled: Record<string, string[]> = {};
     const visited = new Set<string>();
 
-    const loadSecurity = async (
+    const loadConfig = async (
       configPath: string,
       depth: number
     ): Promise<void> => {
@@ -175,6 +191,7 @@ export class ConfigWatcher {
         throw error;
       }
 
+      // Merge security config
       if (config.security) {
         if (config.security.blockedTools) {
           mergedSecurity.blockedTools = [
@@ -205,6 +222,23 @@ export class ConfigWatcher {
         }
       }
 
+      // Merge user-disabled tools by server
+      if (config.userDisabledToolsByServer && 
+          typeof config.userDisabledToolsByServer === 'object' && 
+          !Array.isArray(config.userDisabledToolsByServer)) {
+        for (const [serverId, toolNames] of Object.entries(config.userDisabledToolsByServer)) {
+          if (!Array.isArray(toolNames)) continue;
+          // Filter to valid string tool names
+          const validToolNames = toolNames.filter((name): name is string => 
+            typeof name === 'string' && name.trim() !== ''
+          );
+          // Union arrays per server
+          const existing = mergedUserDisabled[serverId] || [];
+          mergedUserDisabled[serverId] = Array.from(new Set([...existing, ...validToolNames]));
+        }
+      }
+
+      // Follow configPaths references
       if (config.configPaths && Array.isArray(config.configPaths)) {
         const baseDir = path.dirname(normalizedPath);
         for (const refPath of config.configPaths) {
@@ -212,16 +246,19 @@ export class ConfigWatcher {
             const resolvedRefPath = path.isAbsolute(refPath)
               ? refPath
               : path.resolve(baseDir, refPath);
-            await loadSecurity(resolvedRefPath, depth + 1);
+            await loadConfig(resolvedRefPath, depth + 1);
           }
         }
       }
     };
 
     for (const configPath of this.configPaths) {
-      await loadSecurity(configPath, 0);
+      await loadConfig(configPath, 0);
     }
 
-    return mergedSecurity;
+    return {
+      securityConfig: mergedSecurity,
+      userDisabledToolsByServer: mergedUserDisabled,
+    };
   }
 }

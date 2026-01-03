@@ -167,7 +167,8 @@ export class PackageRegistry {
     // Merged configuration
     const mergedConfig: SuperMcpConfig = {
       mcpServers: {},
-      security: {}
+      security: {},
+      userDisabledToolsByServer: {}
     };
 
     // Track visited paths to detect circular references (using normalized/resolved paths)
@@ -297,9 +298,41 @@ export class PackageRegistry {
         });
       }
 
+      // Merge user-disabled tools by server (union arrays per server ID)
+      if (config.userDisabledToolsByServer && typeof config.userDisabledToolsByServer === 'object' && !Array.isArray(config.userDisabledToolsByServer)) {
+        const disabled = mergedConfig.userDisabledToolsByServer!;
+        for (const [serverId, toolNames] of Object.entries(config.userDisabledToolsByServer)) {
+          if (!Array.isArray(toolNames)) {
+            logger.warn("Invalid userDisabledToolsByServer entry (not an array), skipping", {
+              config_file: normalizedPath,
+              server_id: serverId
+            });
+            continue;
+          }
+          // Filter to valid string tool names only
+          const validToolNames = toolNames.filter((name): name is string => typeof name === 'string' && name.trim() !== '');
+          if (validToolNames.length !== toolNames.length) {
+            logger.warn("Some tool names in userDisabledToolsByServer were invalid (non-string or empty), filtering", {
+              config_file: normalizedPath,
+              server_id: serverId,
+              original_count: toolNames.length,
+              valid_count: validToolNames.length
+            });
+          }
+          // Union the arrays (dedupe by using Set)
+          const existingTools = disabled[serverId] || [];
+          const allTools = new Set([...existingTools, ...validToolNames]);
+          disabled[serverId] = Array.from(allTools);
+        }
+        logger.debug("Merged userDisabledToolsByServer config", {
+          config_file: normalizedPath,
+          server_count: Object.keys(config.userDisabledToolsByServer).length,
+        });
+      }
+
       // Handle root-level server entries (for configs like Klavis that don't use mcpServers wrapper)
       // A server config is identified by having 'url' (HTTP) or 'command' (stdio)
-      const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths', 'security']);
+      const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths', 'security', 'userDisabledToolsByServer']);
       for (const [key, value] of Object.entries(config)) {
         if (knownMetadataKeys.has(key)) continue;
         if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -370,11 +403,22 @@ export class PackageRegistry {
     // Initialize security policy
     const securityConfig: SecurityConfig = mergedConfig.security || {};
     const securityPolicy = new SecurityPolicy(securityConfig);
+    
+    // Set user-disabled tools on the security policy
+    if (mergedConfig.userDisabledToolsByServer) {
+      securityPolicy.setUserDisabledTools(mergedConfig.userDisabledToolsByServer);
+    }
+    
     setSecurityPolicy(securityPolicy);
     
     const secSummary = securityPolicy.getSummary();
-    if (secSummary.mode !== "disabled") {
-      logger.info("Security policy active", secSummary);
+    const userDisabledSummary = securityPolicy.getUserDisabledSummary();
+    if (secSummary.mode !== "disabled" || userDisabledSummary.totalDisabled > 0) {
+      logger.info("Security policy active", {
+        ...secSummary,
+        user_disabled_servers: userDisabledSummary.serverCount,
+        user_disabled_tools: userDisabledSummary.totalDisabled,
+      });
     }
 
     // Validate normalized config - skip invalid entries instead of throwing

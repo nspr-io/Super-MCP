@@ -32,6 +32,10 @@ export interface SuperMcpConfig {
     allowedPackages?: string[];   // If set, only these packages are allowed
     logBlockedAttempts?: boolean; // Log when tools are blocked (default: true)
   };
+  // User-disabled tools per server (scoped by server ID to avoid name collisions)
+  // Tool names are short names (e.g., "delete_file"), not namespaced
+  // Example: { "filesystem": ["delete_file"], "gmail": ["send_email"] }
+  userDisabledToolsByServer?: Record<string, string[]>;
 }
 
 export interface ExtendedServerConfig extends StandardServerConfig {
@@ -110,6 +114,8 @@ export interface ToolInfo {
   schema?: any;
   blocked?: boolean;
   blocked_reason?: string;
+  /** True if this tool was disabled by user preference (separate from security policy) */
+  user_disabled?: boolean;
 }
 
 export interface ListToolPackagesInput {
