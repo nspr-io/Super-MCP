@@ -15,6 +15,7 @@ import {
   handleListTools,
   handleUseTool,
   handleHealthCheckAll,
+  handleHealthCheckPackage,
   handleAuthenticate,
   handleGetHelp,
   handleRestartPackage,
@@ -234,6 +235,21 @@ export async function startServer(options: {
             },
           },
           {
+            name: "health_check",
+            description: "Check health of a single MCP package. Faster than health_check_all when you only need one package's status. Returns connection status and authentication state.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                package_id: {
+                  type: "string",
+                  description: "Package ID to check (from list_tool_packages)",
+                  examples: ["filesystem", "gmail", "notion-api"]
+                }
+              },
+              required: ["package_id"]
+            }
+          },
+          {
             name: "authenticate",
             description: "Start OAuth authentication for packages that require it (e.g., Notion, Slack). Opens browser for authorization. Use health_check_all first to see which packages need authentication.",
             inputSchema: {
@@ -322,6 +338,9 @@ export async function startServer(options: {
 
           case "health_check_all":
             return await handleHealthCheckAll(args as any, registry);
+
+          case "health_check":
+            return await handleHealthCheckPackage(args as any, registry);
 
           case "authenticate":
             return await handleAuthenticate(args as any, registry);
