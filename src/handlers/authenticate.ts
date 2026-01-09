@@ -219,7 +219,8 @@ export async function handleAuthenticate(
         });
         
         // Wait for callback with state validation for CSRF protection
-        const callbackPromise = callbackServer.waitForCallback(60000, oauthState);
+        // 5 minutes timeout - OAuth flows can take time (login, 2FA, permissions review, workspace selection)
+        const callbackPromise = callbackServer.waitForCallback(300000, oauthState);
         
         const authCode = await callbackPromise;
         logger.info("OAuth callback received", { package_id, has_code: !!authCode });
