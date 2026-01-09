@@ -17,20 +17,65 @@ function escapeHtml(str: string): string {
 /** Read branding config from environment variables with sensible defaults */
 function getCallbackHtmlConfig() {
   return {
-    appName: process.env.SUPER_MCP_APP_NAME || "your app",
+    appName: process.env.SUPER_MCP_APP_NAME || "Rebel",
     iconUrl: process.env.SUPER_MCP_ICON_URL || "",
     iconText: process.env.SUPER_MCP_ICON_TEXT || "✓",
     primaryColor: process.env.SUPER_MCP_PRIMARY_COLOR || "#6366f1",
-    autoCloseMs: parseInt(process.env.SUPER_MCP_AUTO_CLOSE_MS || "2000", 10),
+    countdownSeconds: parseInt(process.env.SUPER_MCP_COUNTDOWN_SECONDS || "5", 10),
+    deepLinkUrl: process.env.SUPER_MCP_DEEP_LINK_URL || "rebel://settings/connectors",
   };
 }
 
-/** Generate success HTML page */
-function generateSuccessHtml(): string {
+/** Pick a random item from an array */
+function randomPick<T>(arr: readonly T[]): T {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+/** Format service name for display (capitalize, handle kebab-case) */
+function formatServiceName(serviceId: string): string {
+  if (!serviceId) return "your service";
+  const knownNames: Record<string, string> = {
+    "linear": "Linear", "notion": "Notion", "slack": "Slack", "github": "GitHub",
+    "google": "Google", "atlassian": "Atlassian", "jira": "Jira", "asana": "Asana",
+    "trello": "Trello", "figma": "Figma", "dropbox": "Dropbox", "airtable": "Airtable",
+    "monday": "Monday", "clickup": "ClickUp", "todoist": "Todoist", "zendesk": "Zendesk",
+    "hubspot": "HubSpot", "salesforce": "Salesforce", "sentry": "Sentry",
+    "cloudflare": "Cloudflare", "cloudflare workers": "Cloudflare Workers",
+  };
+  const lower = serviceId.toLowerCase().split("-")[0]; // Extract base name before instance suffix
+  if (knownNames[lower]) return knownNames[lower];
+  return serviceId.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+
+/** Generate a success message with the service name baked in. */
+function generateSuccessMessage(serviceName: string): { headline: string; subtitle: string } {
+  const messages = [
+    { headline: "You're in.", subtitle: `${serviceName} and Rebel are now on speaking terms. The hard part's over.` },
+    { headline: "Connected.", subtitle: `${serviceName} has joined the party. Click below to return to Rebel.` },
+    { headline: "Done and done.", subtitle: `${serviceName} is locked in. OAuth handshake complete, dignity intact.` },
+    { headline: "That's a wrap.", subtitle: `${serviceName} credentials secured. No tokens were harmed in this connection.` },
+    { headline: "All systems go.", subtitle: `${serviceName} is officially on board. Click the button to continue.` },
+    { headline: "Consider it handled.", subtitle: `${serviceName} and Rebel have exchanged pleasantries and API keys.` },
+    { headline: "Mission accomplished.", subtitle: `${serviceName} integration complete. The bureaucracy of OAuth is behind us.` },
+    { headline: "Link established.", subtitle: `${serviceName} now answers to Rebel. The paperwork is filed, tokens acquired.` },
+    { headline: "Success.", subtitle: `${serviceName} is connected. That was easier than explaining OAuth to a friend.` },
+    { headline: "We're in business.", subtitle: `${serviceName} access granted. Click below to return with credentials intact.` },
+  ];
+  return randomPick(messages);
+}
+
+/** Generate success HTML page with prominent button to return to Rebel */
+function generateSuccessHtml(serviceId?: string): string {
   const config = getCallbackHtmlConfig();
   const appName = escapeHtml(config.appName);
+  const deepLinkUrl = escapeHtml(config.deepLinkUrl);
+  const countdownSeconds = config.countdownSeconds;
+  const serviceName = formatServiceName(serviceId || "");
+  const message = generateSuccessMessage(serviceName);
+  const headline = escapeHtml(message.headline);
+  const subtitle = escapeHtml(message.subtitle);
   const iconContent = config.iconUrl
-    ? `<img src="${escapeHtml(config.iconUrl)}" alt="" style="width:40px;height:40px;">`
+    ? `<img src="${escapeHtml(config.iconUrl)}" alt="" style="width:48px;height:48px;">`
     : escapeHtml(config.iconText);
 
   return `<!DOCTYPE html>
@@ -38,38 +83,87 @@ function generateSuccessHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Connected</title>
+  <title>Connected — ${appName}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+      background: linear-gradient(145deg, #0c0c14 0%, #1a1a2e 50%, #0f0f1a 100%);
       min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: flex; align-items: center; justify-content: center;
       color: #e0e0e0;
     }
-    .container { max-width: 400px; padding: 48px; text-align: center; }
+    .container { max-width: 420px; padding: 56px 48px; text-align: center; }
     .icon {
-      width: 80px; height: 80px; margin: 0 auto 24px;
-      background: linear-gradient(135deg, ${escapeHtml(config.primaryColor)} 0%, ${escapeHtml(config.primaryColor)}dd 100%);
-      border-radius: 20px;
+      width: 88px; height: 88px; margin: 0 auto 28px;
+      background: linear-gradient(135deg, ${escapeHtml(config.primaryColor)} 0%, ${escapeHtml(config.primaryColor)}cc 100%);
+      border-radius: 22px;
       display: flex; align-items: center; justify-content: center;
-      font-size: 40px; color: white;
-      box-shadow: 0 8px 32px ${escapeHtml(config.primaryColor)}40;
+      font-size: 44px; color: white;
+      box-shadow: 0 12px 40px ${escapeHtml(config.primaryColor)}35;
+      animation: iconPulse 2s ease-in-out infinite;
     }
-    h1 { font-size: 24px; font-weight: 600; margin-bottom: 12px; color: #ffffff; }
-    p { font-size: 15px; color: #a0a0a0; line-height: 1.5; }
+    @keyframes iconPulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.02); }
+    }
+    h1 { font-size: 26px; font-weight: 600; margin-bottom: 12px; color: #ffffff; letter-spacing: -0.3px; }
+    .subtitle { font-size: 15px; color: #888; line-height: 1.6; margin-bottom: 32px; }
+    .countdown-container {
+      display: flex; align-items: center; justify-content: center; gap: 12px;
+      padding: 16px 24px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+    .countdown-text { font-size: 14px; color: #666; }
+    .countdown-number { font-size: 18px; font-weight: 600; color: ${escapeHtml(config.primaryColor)}; min-width: 24px; }
+    .open-button {
+      display: inline-block; padding: 14px 28px;
+      background: linear-gradient(135deg, ${escapeHtml(config.primaryColor)} 0%, ${escapeHtml(config.primaryColor)}dd 100%);
+      color: white; font-size: 15px; font-weight: 500;
+      border: none; border-radius: 10px; cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 4px 16px ${escapeHtml(config.primaryColor)}40;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .open-button:hover { transform: translateY(-1px); box-shadow: 0 6px 20px ${escapeHtml(config.primaryColor)}50; }
+    .fallback { margin-top: 16px; font-size: 13px; color: #555; }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="icon">${iconContent}</div>
-    <h1>Connected</h1>
-    <p>You can close this window and return to ${appName}.</p>
+    <h1>${headline}</h1>
+    <p class="subtitle">${subtitle}</p>
+    <div class="countdown-container">
+      <span class="countdown-text">Auto-opening ${appName} in</span>
+      <span class="countdown-number" id="countdown">${countdownSeconds}</span>
+    </div>
+    <a href="${deepLinkUrl}" class="open-button" id="openBtn">Open ${appName}</a>
+    <p class="fallback">If ${appName} doesn't open automatically, click the button above.</p>
   </div>
-  <script>setTimeout(function() { window.close(); }, ${config.autoCloseMs});</script>
+  <script>
+    (function() {
+      var count = ${countdownSeconds};
+      var el = document.getElementById('countdown');
+      var btn = document.getElementById('openBtn');
+      
+      function tick() {
+        count--;
+        el.textContent = count;
+        if (count <= 0) {
+          // Try to open via the link - user may need to click manually due to browser security
+          window.location.href = '${deepLinkUrl}';
+        } else {
+          setTimeout(tick, 1000);
+        }
+      }
+      
+      setTimeout(tick, 1000);
+    })();
+  </script>
 </body>
 </html>`;
 }
@@ -143,9 +237,15 @@ export class OAuthCallbackServer {
   private resolveCallback?: (code: string) => void;
   private rejectCallback?: (error: Error) => void;
   private expectedState?: string;
+  private serviceId?: string;
 
   constructor(port: number = 5173) {
     this.port = port;
+  }
+  
+  /** Set the service ID for display in the success page (e.g., "Sentry", "Linear") */
+  setServiceId(serviceId: string): void {
+    this.serviceId = serviceId;
   }
   
   /**
@@ -219,9 +319,9 @@ export class OAuthCallbackServer {
             }
             
             res.writeHead(200, SECURITY_HEADERS);
-            res.end(generateSuccessHtml());
+            res.end(generateSuccessHtml(this.serviceId));
 
-            logger.info("OAuth callback received", { has_code: true, state_validated: !!this.expectedState });
+            logger.info("OAuth callback received", { has_code: true, state_validated: !!this.expectedState, serviceId: this.serviceId });
 
             if (this.resolveCallback) {
               this.resolveCallback(code);
@@ -268,26 +368,29 @@ export class OAuthCallbackServer {
     }
     
     return new Promise((resolve, reject) => {
-      this.resolveCallback = resolve;
-      this.rejectCallback = reject;
-
       const timer = setTimeout(() => {
         reject(new Error("OAuth callback timeout"));
       }, timeout);
 
-      // Clean up on resolution
-      const originalResolve = this.resolveCallback;
+      // Wrap both resolve and reject to clear the timer
       this.resolveCallback = (code) => {
         clearTimeout(timer);
-        originalResolve(code);
+        resolve(code);
+      };
+      this.rejectCallback = (error) => {
+        clearTimeout(timer);
+        reject(error);
       };
     });
   }
 
   async stop(): Promise<void> {
     if (this.server) {
-      // Force close immediately - don't wait for keep-alive connections
-      // This prevents 60-75 second delays from browser keep-alive
+      // Wait briefly to allow the success response to be fully sent to the browser
+      // before force-closing connections (prevents "Connection Reset" errors)
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Force close to avoid 60-75 second delays from browser keep-alive
       this.server.closeAllConnections();
       return new Promise((resolve) => {
         this.server!.close(() => {

@@ -59,7 +59,12 @@ export async function handleAuthenticate(
     if (health === "ok") {
       try {
         logger.info("Testing tool access", { package_id });
-        const tools = await client.listTools();
+        // Add 10s timeout to prevent hanging on slow/unresponsive MCP servers
+        const toolsPromise = client.listTools();
+        const timeoutPromise = new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error("listTools timed out after 10s")), 10000)
+        );
+        const tools = await Promise.race([toolsPromise, timeoutPromise]);
         logger.info("Tools accessible", { package_id, tool_count: tools.length });
         return {
           content: [
@@ -138,10 +143,22 @@ export async function handleAuthenticate(
       
       const { OAuthCallbackServer } = await import("../auth/callbackServer.js");
       callbackServer = new OAuthCallbackServer(oauthPort);
+      callbackServer.setServiceId(package_id);
       
       // Create OAuth provider early and generate state for CSRF protection
       oauthProvider = new SimpleOAuthProvider(package_id, oauthPort);
       await oauthProvider.initialize();
+      
+      // Check for port mismatch and invalidate stale credentials if needed
+      // This ensures we re-register with the OAuth server if the port changed
+      const invalidated = await oauthProvider.checkAndInvalidateOnPortMismatch();
+      if (invalidated) {
+        logger.info("OAuth credentials invalidated due to port mismatch, will re-register", {
+          package_id,
+          oauth_port: oauthPort
+        });
+      }
+      
       oauthState = await oauthProvider.state();
       logger.info("OAuth state generated for CSRF protection", { 
         package_id, 
