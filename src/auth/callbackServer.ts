@@ -336,7 +336,9 @@ export class OAuthCallbackServer {
         }
       });
 
-      this.server.listen(this.port, '127.0.0.1', () => {
+      // Bind to all interfaces (IPv4 and IPv6) to handle localhost resolution
+      // on systems where localhost might resolve to ::1 (IPv6) first
+      this.server.listen(this.port, () => {
         logger.info("OAuth callback server started", { port: this.port });
         resolve();
       });

@@ -41,6 +41,7 @@ export function checkPortAvailable(port: number): Promise<boolean> {
     server.once("listening", () => {
       server.close(() => resolve(true));
     });
-    server.listen(port, "127.0.0.1");
+    // Bind to all interfaces (no host specified) to match callback server behavior
+    server.listen(port);
   });
 }
