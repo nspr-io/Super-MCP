@@ -22,7 +22,7 @@ function getCallbackHtmlConfig() {
     iconText: process.env.SUPER_MCP_ICON_TEXT || "✓",
     primaryColor: process.env.SUPER_MCP_PRIMARY_COLOR || "#6366f1",
     countdownSeconds: parseInt(process.env.SUPER_MCP_COUNTDOWN_SECONDS || "5", 10),
-    deepLinkUrl: process.env.SUPER_MCP_DEEP_LINK_URL || "rebel://settings/connectors",
+    deepLinkUrl: process.env.SUPER_MCP_DEEP_LINK_URL || "mindstone://settings/connectors",
   };
 }
 
