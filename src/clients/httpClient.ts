@@ -35,6 +35,7 @@ export class HttpMcpClient implements McpClient {
   private oauthPort: number;
   private requestQueue: PQueue;
   private externalOAuthProvider?: SimpleOAuthProvider;
+  private usedSseFallback: boolean = false;
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
     this.packageId = packageId;
@@ -132,6 +133,65 @@ export class HttpMcpClient implements McpClient {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       
+      // Detect transport negotiation errors that indicate Streamable HTTP isn't supported
+      // These errors occur when the server only supports SSE transport
+      const isTransportNegotiationError = 
+        errorMessage.includes("Missing sessionId parameter") ||
+        errorMessage.includes("HTTP 404") ||
+        errorMessage.includes("405 Method Not Allowed");
+      
+      // Only attempt SSE fallback if we're currently using Streamable HTTP (not already SSE)
+      const currentlyUsingStreamableHttp = this.config.transportType !== "sse" && !this.usedSseFallback;
+      
+      if (isTransportNegotiationError && currentlyUsingStreamableHttp) {
+        logger.warn("Streamable HTTP transport failed, falling back to SSE transport", {
+          package_id: this.packageId,
+          original_error: errorMessage,
+        });
+        
+        try {
+          // Close the existing client before creating a new one
+          try {
+            await this.client.close();
+          } catch (closeError) {
+            logger.debug("Error closing client during SSE fallback (expected)", {
+              package_id: this.packageId,
+              error: closeError instanceof Error ? closeError.message : String(closeError)
+            });
+          }
+          
+          // Create a fresh client for the SSE transport
+          this.client = new Client(
+            { name: "super-mcp-router", version: "0.1.0" },
+            { capabilities: {} }
+          );
+          
+          // Mark that we're using SSE fallback - this affects createTransport()
+          this.usedSseFallback = true;
+          
+          // Create SSE transport and connect
+          this.transport = this.createTransport();
+          await this.client.connect(this.transport);
+          this.isConnected = true;
+          
+          logger.info("Successfully connected to MCP server using SSE fallback", {
+            package_id: this.packageId,
+          });
+          return;
+        } catch (fallbackError) {
+          logger.error("SSE fallback also failed", {
+            package_id: this.packageId,
+            original_error: errorMessage,
+            fallback_error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          });
+          // Continue to throw the original error with fallback context
+          throw new Error(
+            `Transport negotiation failed. Original: ${errorMessage}. ` +
+            `SSE fallback: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+          );
+        }
+      }
+      
       if (errorMessage.includes("Client ID mismatch")) {
         logger.error("OAuth tokens are invalid (Client ID mismatch)", {
           package_id: this.packageId,
@@ -177,8 +237,12 @@ export class HttpMcpClient implements McpClient {
     const url = new URL(this.config.base_url!);
     const options = this.getTransportOptions();
     
-    if (this.config.transportType === "sse") {
-      logger.debug("Using HTTP+SSE transport (deprecated)", { package_id: this.packageId });
+    // Use SSE transport if explicitly configured or if we previously fell back to SSE
+    if (this.config.transportType === "sse" || this.usedSseFallback) {
+      logger.debug("Using HTTP+SSE transport", { 
+        package_id: this.packageId,
+        reason: this.usedSseFallback ? "fallback" : "configured"
+      });
       return new SSEClientTransport(url, options);
     } else {
       logger.debug("Using Streamable HTTP transport", { package_id: this.packageId });
