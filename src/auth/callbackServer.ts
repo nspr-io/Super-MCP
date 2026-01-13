@@ -336,10 +336,12 @@ export class OAuthCallbackServer {
         }
       });
 
-      // Bind to all interfaces (IPv4 and IPv6) to handle localhost resolution
-      // on systems where localhost might resolve to ::1 (IPv6) first
-      this.server.listen(this.port, () => {
-        logger.info("OAuth callback server started", { port: this.port });
+      // Bind to loopback only to avoid triggering Windows Firewall prompts.
+      // Previously bound to all interfaces (0.0.0.0) which triggered firewall dialogs.
+      // Note: If users have issues with localhost resolving to ::1 (IPv6), we may need
+      // to create dual listeners or ensure redirect URIs use 127.0.0.1 explicitly.
+      this.server.listen(this.port, '127.0.0.1', () => {
+        logger.info("OAuth callback server started", { port: this.port, host: '127.0.0.1' });
         resolve();
       });
 

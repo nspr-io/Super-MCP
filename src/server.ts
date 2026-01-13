@@ -21,6 +21,7 @@ import {
   handleRestartPackage,
   handleSearchTools,
 } from "./handlers/index.js";
+import { formatError } from "./utils/formatError.js";
 
 const logger = getLogger();
 
@@ -363,7 +364,7 @@ export async function startServer(options: {
       } catch (error) {
         logger.error("Tool execution failed", {
           tool_name: name,
-          error: error instanceof Error ? error.message : String(error),
+          error: formatError(error),
         });
 
         if (error && typeof error === "object" && "code" in error) {
@@ -402,7 +403,7 @@ export async function startServer(options: {
 
         throw {
           code: ERROR_CODES.INTERNAL_ERROR,
-          message: `${error instanceof Error ? error.message : String(error)}. Try 'get_help(topic: "error_handling")' for general troubleshooting.`,
+          message: `${formatError(error)}. Try 'get_help(topic: "error_handling")' for general troubleshooting.`,
           data: { tool_name: name },
         };
       }
@@ -526,7 +527,7 @@ export async function startServer(options: {
           });
         } catch (error) {
           logger.error("Failed to build tool catalog", {
-            error: error instanceof Error ? error.message : String(error),
+            error: formatError(error),
           });
           res.status(500).json({ error: "Failed to build tool catalog" });
         }
@@ -537,7 +538,7 @@ export async function startServer(options: {
           await httpTransport.handleRequest(req, res, req.body);
         } catch (error) {
           logger.error("Failed to handle MCP request", {
-            error: error instanceof Error ? error.message : String(error),
+            error: formatError(error),
           });
           if (!res.headersSent) {
             res.status(500).json({ error: "Internal server error" });
@@ -591,7 +592,7 @@ export async function startServer(options: {
     
   } catch (error) {
     logger.fatal("Failed to start server", {
-      error: error instanceof Error ? error.message : String(error),
+      error: formatError(error),
     });
     throw error;
   }

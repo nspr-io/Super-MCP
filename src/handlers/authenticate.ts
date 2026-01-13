@@ -59,10 +59,14 @@ export async function handleAuthenticate(
     if (health === "ok") {
       try {
         logger.info("Testing tool access", { package_id });
-        // Add 10s timeout to prevent hanging on slow/unresponsive MCP servers
+        // Timeout to prevent hanging on slow/unresponsive MCP servers
+        // Windows needs longer timeout due to antivirus/firewall checks on cold-start
+        const isWindows = process.platform === 'win32';
+        const defaultTimeoutMs = isWindows ? 30000 : 10000;
+        const timeoutMs = Number(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS) || defaultTimeoutMs;
         const toolsPromise = client.listTools();
         const timeoutPromise = new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error("listTools timed out after 10s")), 10000)
+          setTimeout(() => reject(new Error(`listTools timed out after ${timeoutMs}ms`)), timeoutMs)
         );
         const tools = await Promise.race([toolsPromise, timeoutPromise]);
         logger.info("Tools accessible", { package_id, tool_count: tools.length });
