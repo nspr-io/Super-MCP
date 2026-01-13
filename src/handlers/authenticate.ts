@@ -2,6 +2,7 @@ import { PackageRegistry } from "../registry.js";
 import { getLogger } from "../logging.js";
 import { findAvailablePort, checkPortAvailable } from "../utils/portFinder.js";
 import { SimpleOAuthProvider } from "../auth/providers/simple.js";
+import { formatError } from "../utils/formatError.js";
 
 const logger = getLogger();
 
@@ -86,14 +87,14 @@ export async function handleAuthenticate(
       } catch (error) {
         logger.info("Tool access failed, need to authenticate", { 
           package_id,
-          error: error instanceof Error ? error.message : String(error),
+          error: formatError(error),
         });
       }
     }
   } catch (error) {
     logger.info("Client not available or errored", { 
       package_id,
-      error: error instanceof Error ? error.message : String(error),
+      error: formatError(error),
     });
   }
   
@@ -127,7 +128,7 @@ export async function handleAuthenticate(
       } catch (portError) {
         logger.error("Failed to find available port", { 
           package_id,
-          error: portError instanceof Error ? portError.message : String(portError)
+          error: formatError(portError)
         });
         return {
           content: [
@@ -137,7 +138,7 @@ export async function handleAuthenticate(
                 package_id,
                 status: "error",
                 message: "Failed to find available port for OAuth callback",
-                error: portError instanceof Error ? portError.message : String(portError),
+                error: formatError(portError),
               }, null, 2),
             },
           ],
@@ -177,7 +178,7 @@ export async function handleAuthenticate(
       } catch (error) {
         logger.error("Failed to start callback server", { 
           package_id,
-          error: error instanceof Error ? error.message : String(error)
+          error: formatError(error)
         });
         
         return {
@@ -188,7 +189,7 @@ export async function handleAuthenticate(
                 package_id,
                 status: "error",
                 message: "Failed to start OAuth callback server",
-                error: error instanceof Error ? error.message : String(error),
+                error: formatError(error),
               }, null, 2),
             },
           ],
@@ -218,7 +219,7 @@ export async function handleAuthenticate(
         connectPromise.catch(err => {
           logger.debug("OAuth redirect initiated (expected)", {
             package_id,
-            error: err instanceof Error ? err.message : String(err)
+            error: formatError(err)
           });
         });
         
@@ -246,7 +247,7 @@ export async function handleAuthenticate(
         } catch (err) {
           logger.warn("Connection verification failed - tokens saved but server rejected request. Try using a tool to confirm.", { 
             package_id, 
-            error: err instanceof Error ? err.message : String(err) 
+            error: formatError(err) 
           });
           health = "error";
         }
@@ -300,7 +301,7 @@ export async function handleAuthenticate(
       } catch (error) {
         logger.error("OAuth failed", {
           package_id,
-          error: error instanceof Error ? error.message : String(error),
+          error: formatError(error),
         });
       } finally {
         if (callbackServer) {
@@ -310,7 +311,7 @@ export async function handleAuthenticate(
           } catch (err) {
             logger.debug("Error stopping callback server", { 
               package_id,
-              error: err instanceof Error ? err.message : String(err)
+              error: formatError(err)
             });
           }
         }
@@ -319,7 +320,7 @@ export async function handleAuthenticate(
       connectPromise.catch(err => {
         logger.debug("OAuth connection error (expected)", { 
           package_id,
-          error: err instanceof Error ? err.message : String(err)
+          error: formatError(err)
         });
       });
     }
@@ -360,7 +361,7 @@ export async function handleAuthenticate(
   } catch (error) {
     logger.error("Authentication failed", {
       package_id,
-      error: error instanceof Error ? error.message : String(error),
+      error: formatError(error),
     });
     return {
       content: [
@@ -370,7 +371,7 @@ export async function handleAuthenticate(
             package_id,
             status: "error",
             message: "Authentication failed",
-            error: error instanceof Error ? error.message : String(error),
+            error: formatError(error),
           }, null, 2),
         },
       ],
