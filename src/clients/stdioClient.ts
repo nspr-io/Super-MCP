@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from "child_process";
+import { exec } from "child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import PQueue from "p-queue";
@@ -6,6 +6,89 @@ import { McpClient, PackageConfig } from "../types.js";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
+
+/**
+ * Kill a process tree to ensure all child/grandchild processes are terminated.
+ * This is critical for MCP servers launched via wrappers like `npm run dev` or `npx`,
+ * where the actual MCP server is a grandchild process.
+ * 
+ * On Windows: uses taskkill /t to kill the entire tree (recursive)
+ * On Unix/macOS: recursively finds all descendants via pgrep and kills them leaf-first
+ * 
+ * IMPORTANT: Must be called BEFORE the parent process is killed, otherwise on Unix
+ * the children get reparented to PID 1 and we can't find them via PPID.
+ */
+const killProcessTree = async (pid: number): Promise<void> => {
+  if (process.platform === "win32") {
+    // taskkill /pid <pid> /t /f
+    // /t = kill process tree (all child processes) - this IS recursive
+    // /f = force kill (don't wait for graceful shutdown)
+    return new Promise((resolve) => {
+      exec(`taskkill /pid ${pid} /t /f`, (error) => {
+        if (error) {
+          // Error codes 128 and 1 mean "no process found" which is fine (already dead)
+          if ((error as any).code !== 128 && (error as any).code !== 1) {
+            logger.debug("taskkill failed (process may already be dead)", { pid, error: error.message });
+          }
+        }
+        resolve();
+      });
+    });
+  } else {
+    // On Unix/macOS: recursively find all descendants and kill them leaf-first
+    // This ensures children don't get reparented before we can kill them
+    const getAllDescendants = (parentPid: number): Promise<number[]> => {
+      return new Promise((resolve) => {
+        // pgrep -P finds direct children; we recursively gather all descendants
+        exec(`pgrep -P ${parentPid} 2>/dev/null`, async (error, stdout) => {
+          if (error || !stdout.trim()) {
+            resolve([]);
+            return;
+          }
+          const directChildren = stdout.trim().split('\n').map(p => parseInt(p, 10)).filter(p => !isNaN(p));
+          
+          // Recursively get grandchildren
+          const allDescendants: number[] = [];
+          for (const childPid of directChildren) {
+            const grandchildren = await getAllDescendants(childPid);
+            allDescendants.push(...grandchildren);
+          }
+          // Return children after their descendants (so we kill leaves first)
+          allDescendants.push(...directChildren);
+          resolve(allDescendants);
+        });
+      });
+    };
+    
+    try {
+      // Get all descendants (leaves first)
+      const descendants = await getAllDescendants(pid);
+      
+      // Kill all descendants (leaves first, then work up to direct children)
+      for (const descendantPid of descendants) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {
+          // Process may already be dead
+        }
+      }
+      
+      // Finally kill the root process
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Process may already be dead
+      }
+    } catch {
+      // Best effort - if anything fails, still try to kill the root
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Ignore
+      }
+    }
+  }
+};
 
 // STDIO transport uses a single stdin/stdout pipe, so requests must be serialized
 // to avoid race conditions and "stream busy" errors documented in:
@@ -17,7 +100,6 @@ const STDIO_CONCURRENCY = 1;
 export class StdioMcpClient implements McpClient {
   private client: Client;
   private transport: StdioClientTransport;
-  private process?: ChildProcess;
   private packageId: string;
   private config: PackageConfig;
   private requestQueue: PQueue;
@@ -201,8 +283,12 @@ export class StdioMcpClient implements McpClient {
   }
 
   async close(): Promise<void> {
+    // Get PID before closing (SDK exposes it via transport.pid)
+    const pid = this.transport.pid;
+    
     logger.info("Closing stdio MCP client", {
       package_id: this.packageId,
+      pid,
       queue_size: this.requestQueue.size,
       queue_pending: this.requestQueue.pending,
     });
@@ -211,12 +297,16 @@ export class StdioMcpClient implements McpClient {
       // Clear any pending requests in the queue
       this.requestQueue.clear();
       
-      await this.client.close();
-      
-      // Also clean up the process if it exists
-      if (this.process && !this.process.killed) {
-        this.process.kill();
+      // IMPORTANT: Kill the process tree BEFORE SDK close, while PPID linkage is still valid.
+      // The SDK's close() kills the spawned process, which causes children to be reparented
+      // to PID 1 on Unix, making pkill -P ineffective. We must kill descendants first.
+      if (pid) {
+        logger.debug("Killing process tree before SDK close (while PPID linkage is valid)", { package_id: this.packageId, pid });
+        await killProcessTree(pid);
       }
+      
+      // Now let the SDK clean up (will detect process already exited)
+      await this.client.close();
 
       logger.info("Stdio MCP client closed", {
         package_id: this.packageId,
