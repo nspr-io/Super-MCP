@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
+import PQueue from "p-queue";
 import { ERROR_CODES } from "./types.js";
 import { PackageRegistry } from "./registry.js";
 import { Catalog } from "./catalog.js";
@@ -447,7 +448,7 @@ export async function startServer(options: {
       app.get("/api/tools", async (_req, res) => {
         try {
           const securityPolicy = getSecurityPolicy();
-          const allTools: Array<{
+          type ToolEntry = {
             package_id: string;
             package_name: string;
             tool_id: string;
@@ -458,56 +459,70 @@ export async function startServer(options: {
             blocked?: boolean;
             blocked_reason?: string;
             user_disabled?: boolean;
-          }> = [];
+          };
 
-          for (const pkg of registry.getPackages()) {
-            try {
-              await catalog.ensurePackageLoaded(pkg.id);
-              const tools = await catalog.buildToolInfos(pkg.id, {
-                summarize: true,
-                include_schemas: true,
-                include_descriptions: true,
-              });
-              for (const tool of tools) {
-                // Extract raw tool name for checking
-                const rawToolId = tool.tool_id.includes('__')
-                  ? tool.tool_id.split('__').slice(1).join('__')
-                  : tool.tool_id;
-                
-                // Check security policy
-                const blockCheck = securityPolicy.isToolBlocked(pkg.id, rawToolId);
-                const isUserDisabled = securityPolicy.isUserDisabled(pkg.id, rawToolId);
-                
-                const toolEntry: typeof allTools[0] = {
-                  package_id: pkg.id,
-                  package_name: pkg.name || pkg.id,
-                  tool_id: tool.tool_id,
-                  name: tool.name,
-                  description: tool.description || tool.summary || "",
-                  summary: tool.summary,
-                  input_schema: tool.schema,
-                };
-                
-                // Security-blocked takes precedence
-                if (blockCheck.blocked) {
-                  toolEntry.blocked = true;
-                  toolEntry.blocked_reason = blockCheck.reason;
-                } else if (isUserDisabled) {
-                  toolEntry.blocked = true;
-                  toolEntry.blocked_reason = "Disabled by user";
-                  toolEntry.user_disabled = true;
+          const packages = registry.getPackages();
+          const queue = new PQueue({ concurrency: 5 });
+
+          // Parallelize package loading with bounded concurrency, collect results in order
+          const results = await Promise.all(
+            packages.map((pkg) =>
+              queue.add(async (): Promise<ToolEntry[]> => {
+                try {
+                  await catalog.ensurePackageLoaded(pkg.id);
+                  const tools = await catalog.buildToolInfos(pkg.id, {
+                    summarize: true,
+                    include_schemas: true,
+                    include_descriptions: true,
+                  });
+
+                  const packageTools: ToolEntry[] = [];
+                  for (const tool of tools) {
+                    // Extract raw tool name for checking
+                    const rawToolId = tool.tool_id.includes('__')
+                      ? tool.tool_id.split('__').slice(1).join('__')
+                      : tool.tool_id;
+
+                    // Check security policy
+                    const blockCheck = securityPolicy.isToolBlocked(pkg.id, rawToolId);
+                    const isUserDisabled = securityPolicy.isUserDisabled(pkg.id, rawToolId);
+
+                    const toolEntry: ToolEntry = {
+                      package_id: pkg.id,
+                      package_name: pkg.name || pkg.id,
+                      tool_id: tool.tool_id,
+                      name: tool.name,
+                      description: tool.description || tool.summary || "",
+                      summary: tool.summary,
+                      input_schema: tool.schema,
+                    };
+
+                    // Security-blocked takes precedence
+                    if (blockCheck.blocked) {
+                      toolEntry.blocked = true;
+                      toolEntry.blocked_reason = blockCheck.reason;
+                    } else if (isUserDisabled) {
+                      toolEntry.blocked = true;
+                      toolEntry.blocked_reason = "Disabled by user";
+                      toolEntry.user_disabled = true;
+                    }
+
+                    packageTools.push(toolEntry);
+                  }
+                  return packageTools;
+                } catch (pkgError) {
+                  logger.warn("Failed to load tools for package", {
+                    package_id: pkg.id,
+                    error: pkgError instanceof Error ? pkgError.message : String(pkgError),
+                  });
+                  return []; // Return empty array on error, continue with other packages
                 }
-                
-                allTools.push(toolEntry);
-              }
-            } catch (pkgError) {
-              logger.warn("Failed to load tools for package", {
-                package_id: pkg.id,
-                error: pkgError instanceof Error ? pkgError.message : String(pkgError),
-              });
-              // Continue with other packages
-            }
-          }
+              })
+            )
+          );
+
+          // Flatten results while preserving package order
+          const allTools = results.flat().filter((t): t is ToolEntry => t !== undefined);
 
           // Include user-disabled hash in ETag to invalidate cache when user-disabled changes
           // Use content hash (not just count) so swapping disabled tools invalidates cache
@@ -521,7 +536,7 @@ export async function startServer(options: {
             tools: allTools,
             etag: combinedEtag,
             tool_count: allTools.length,
-            package_count: registry.getPackages().length,
+            package_count: packages.length,
             user_disabled_count: userDisabledSummary.totalDisabled,
             generated_at: new Date().toISOString(),
           });
