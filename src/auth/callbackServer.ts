@@ -1,6 +1,7 @@
 import * as http from "http";
 import { timingSafeEqual } from "crypto";
 import { getLogger } from "../logging.js";
+import { OAUTH_CALLBACK_HOST } from "../utils/portFinder.js";
 
 const logger = getLogger();
 
@@ -336,12 +337,11 @@ export class OAuthCallbackServer {
         }
       });
 
-      // Bind to loopback only to avoid triggering Windows Firewall prompts.
-      // Previously bound to all interfaces (0.0.0.0) which triggered firewall dialogs.
+      // Bind to OAUTH_CALLBACK_HOST (127.0.0.1) to avoid triggering Windows Firewall prompts.
       // Note: If users have issues with localhost resolving to ::1 (IPv6), we may need
       // to create dual listeners or ensure redirect URIs use 127.0.0.1 explicitly.
-      this.server.listen(this.port, '127.0.0.1', () => {
-        logger.info("OAuth callback server started", { port: this.port, host: '127.0.0.1' });
+      this.server.listen(this.port, OAUTH_CALLBACK_HOST, () => {
+        logger.info("OAuth callback server started", { port: this.port, host: OAUTH_CALLBACK_HOST });
         resolve();
       });
 
