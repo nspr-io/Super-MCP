@@ -216,12 +216,15 @@ authenticate(package_id: "package-name")
 
 ### "Port in use" during OAuth
 
-**Cause**: All callback server ports (5173-5182) are occupied by other processes.
+**Cause**: All callback server ports (5173-5182) are occupied by other processes on the loopback interface (127.0.0.1).
+
+**Note**: The port check binds to 127.0.0.1 to match the callback server's actual binding. This ensures accurate availability detection even when other services (like Vite dev server) use the same ports.
 
 **Solution**:
-1. Check for other development servers using these ports
-2. Free up a port in the 5173-5182 range
-3. Retry authentication
+1. The callback server will automatically try ports 5173-5182 sequentially
+2. If all ports are busy, check for other dev servers (Vite uses 5173 by default)
+3. Free up a port in the range or stop conflicting processes
+4. Retry authentication
 
 ### Checking Authentication Status
 
