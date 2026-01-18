@@ -132,6 +132,7 @@ export interface ListToolPackagesOutput {
 
 export interface ListToolsInput {
   package_id: string;
+  name_pattern?: string;  // Glob pattern: "*inbox*", "get_*", "*_list_*"
   summarize?: boolean;
   include_schemas?: boolean;
   page_size?: number;
