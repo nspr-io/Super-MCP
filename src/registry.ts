@@ -168,7 +168,8 @@ export class PackageRegistry {
     const mergedConfig: SuperMcpConfig = {
       mcpServers: {},
       security: {},
-      userDisabledToolsByServer: {}
+      userDisabledToolsByServer: {},
+      disabledServers: []
     };
 
     // Track visited paths to detect circular references (using normalized/resolved paths)
@@ -330,9 +331,31 @@ export class PackageRegistry {
         });
       }
 
+      // Merge disabledServers (union arrays, dedupe)
+      if (config.disabledServers && Array.isArray(config.disabledServers)) {
+        const validServerIds = config.disabledServers.filter(
+          (id): id is string => typeof id === 'string' && id.trim() !== ''
+        );
+        if (validServerIds.length !== config.disabledServers.length) {
+          logger.warn("Some disabledServers entries were invalid (non-string or empty), filtering", {
+            config_file: normalizedPath,
+            original_count: config.disabledServers.length,
+            valid_count: validServerIds.length
+          });
+        }
+        // Union with existing disabled servers (dedupe via Set)
+        const allDisabled = new Set([...mergedConfig.disabledServers!, ...validServerIds]);
+        mergedConfig.disabledServers = Array.from(allDisabled);
+        logger.debug("Merged disabledServers config", {
+          config_file: normalizedPath,
+          added_count: validServerIds.length,
+          total_disabled: mergedConfig.disabledServers.length
+        });
+      }
+
       // Handle root-level server entries (for configs like Klavis that don't use mcpServers wrapper)
       // A server config is identified by having 'url' (HTTP) or 'command' (stdio)
-      const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths', 'security', 'userDisabledToolsByServer']);
+      const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths', 'security', 'userDisabledToolsByServer', 'disabledServers']);
       for (const [key, value] of Object.entries(config)) {
         if (knownMetadataKeys.has(key)) continue;
         if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -435,6 +458,21 @@ export class PackageRegistry {
       });
     }
 
+    // Filter out disabled servers
+    const disabledServers = mergedConfig.disabledServers || [];
+    if (disabledServers.length > 0) {
+      const disabledSet = new Set(disabledServers);
+      const filteredOut = registry.packages.filter(p => disabledSet.has(p.id));
+      registry.packages = registry.packages.filter(p => !disabledSet.has(p.id));
+      if (filteredOut.length > 0) {
+        logger.info("Filtering disabled servers", {
+          disabled_servers: filteredOut.map(p => p.id),
+          filtered_count: filteredOut.length,
+          remaining_count: registry.packages.length
+        });
+      }
+    }
+
     // Check for placeholder values
     PackageRegistry.checkForPlaceholders(registry.packages);
 
@@ -443,6 +481,7 @@ export class PackageRegistry {
       root_configs: configPaths.length,
       total_packages: registry.packages.length,
       skipped_packages: validationResult.skipped.length,
+      disabled_servers: disabledServers.length,
       packages: registry.packages.map(p => ({ id: p.id, transport: p.transport })),
       load_order: loadOrder
     });
