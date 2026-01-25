@@ -9,6 +9,7 @@ export async function handleListTools(
 ): Promise<any> {
   const {
     package_id,
+    name_pattern,
     summarize = true,
     include_schemas = false,
     page_size = 20,
@@ -75,16 +76,45 @@ export async function handleListTools(
     return tool;
   });
 
+  // Apply name_pattern filter if provided
+  let tools = annotatedTools;
+  if (name_pattern) {
+    // Validate pattern
+    if (typeof name_pattern !== 'string') {
+      throw {
+        code: ERROR_CODES.INVALID_PARAMS,
+        message: "name_pattern must be a string",
+      };
+    }
+    if (name_pattern.length > 200) {
+      throw {
+        code: ERROR_CODES.INVALID_PARAMS,
+        message: "name_pattern exceeds maximum length of 200 characters",
+      };
+    }
+    
+    // Convert glob to regex with anchoring for full-string match
+    // 1. Collapse consecutive wildcards to prevent ReDoS
+    // 2. Escape special regex chars
+    // 3. Convert glob wildcards: * -> .*, ? -> .
+    // 4. Anchor for full-string match
+    const collapsed = name_pattern.replace(/\*+/g, '*');
+    const escaped = collapsed.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+    const regexStr = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+    const regex = new RegExp(`^${regexStr}$`, 'i');
+    tools = tools.filter(t => regex.test(t.name) || regex.test(t.tool_id));
+  }
+
   const startIndex = page_token ? 
     Math.max(0, parseInt(Buffer.from(page_token, 'base64').toString('utf8'))) : 0;
   const endIndex = startIndex + page_size;
-  const tools = annotatedTools.slice(startIndex, endIndex);
+  const pagedTools = tools.slice(startIndex, endIndex);
   
-  const nextToken = endIndex < annotatedTools.length ? 
+  const nextToken = endIndex < tools.length ? 
     Buffer.from(endIndex.toString()).toString('base64') : null;
 
   const result: ListToolsOutput = {
-    tools,
+    tools: pagedTools,
     next_page_token: nextToken,
   };
 

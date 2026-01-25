@@ -99,7 +99,16 @@ export async function startServer(options: {
           },
           {
             name: "list_tools",
-            description: "Explore tools within a specific package to understand what actions you can perform. Use the package_id from list_tool_packages. Returns tool names, descriptions, and argument schemas. Essential for discovering available functionality before using use_tool.",
+            description: `Explore tools within a specific package. Use the package_id from list_tool_packages.
+
+Optional: Use name_pattern to filter tools by glob pattern (matched against full tool name):
+- "*inbox*" - tools containing "inbox"
+- "get_*" - tools starting with "get_"
+- "*_list_*" - tools containing "_list_"
+
+Pattern is case-insensitive and matches the full tool name. Use * for any characters, ? for single character.
+
+Returns tool names, summaries, and argument skeletons. Use include_schemas=true for full JSON schemas.`,
             inputSchema: {
               type: "object",
               properties: {
@@ -107,6 +116,10 @@ export async function startServer(options: {
                   type: "string",
                   description: "Package ID from list_tool_packages (e.g., 'filesystem', 'github', 'notion-api')",
                   examples: ["filesystem", "github", "notion-api", "brave-search"],
+                },
+                name_pattern: {
+                  type: "string",
+                  description: "Glob pattern to filter tools by name. Use * for any characters, ? for single character. Pattern matches full tool name (case-insensitive). Examples: '*inbox*', 'get_*', '*_create_*'",
                 },
                 summarize: {
                   type: "boolean",

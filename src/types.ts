@@ -36,6 +36,10 @@ export interface SuperMcpConfig {
   // Tool names are short names (e.g., "delete_file"), not namespaced
   // Example: { "filesystem": ["delete_file"], "gmail": ["send_email"] }
   userDisabledToolsByServer?: Record<string, string[]>;
+  // Disabled servers - these servers are completely excluded from routing
+  // Server IDs are the keys in mcpServers (e.g., "GoogleWorkspace-greg-work-com", "Slack-mindstone")
+  // Example: ["Slack-mindstone", "HubSpot"]
+  disabledServers?: string[];
 }
 
 export interface ExtendedServerConfig extends StandardServerConfig {
@@ -132,6 +136,7 @@ export interface ListToolPackagesOutput {
 
 export interface ListToolsInput {
   package_id: string;
+  name_pattern?: string;  // Glob pattern: "*inbox*", "get_*", "*_list_*"
   summarize?: boolean;
   include_schemas?: boolean;
   page_size?: number;

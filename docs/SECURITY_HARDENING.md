@@ -2,6 +2,8 @@
 
 This document tracks security hardening measures implemented in Super-MCP.
 
+**See also:** [Rebel Security Overview](../../docs/project/SECURITY_OVERVIEW.md) - Parent app security architecture
+
 ## Implemented (2025-12-26)
 
 ### CRITICAL Priority
@@ -71,16 +73,16 @@ This document tracks security hardening measures implemented in Super-MCP.
 
 **Issue:** HTTP `/mcp` endpoint has no authentication.
 
-**Status:** Deferred - requires cross-repo coordination with parent app.
+**Status:** Deferred for Super-MCP, but **implemented in parent app's local model proxy**.
 
-**Rationale:** 
-- Token handoff mechanism needs parent app changes
-- Host validation already closes DNS rebinding vector
-- Localhost binding limits attack surface
+**Parent app implementation (2026-01-14):**
+- `localModelProxyServer.ts` generates per-session token via `crypto.randomBytes()`
+- Requires `X-Proxy-Auth` header on all requests
+- Token passed to CLI via `ANTHROPIC_CUSTOM_HEADERS` env var
 
-**When to implement:**
-- When parent app can generate token and pass via env var
-- Consider `SUPER_MCP_AUTH_TOKEN` environment variable approach
+**Super-MCP status:**
+- Host validation + localhost binding provide baseline protection
+- Bearer auth for `/mcp` endpoint still deferred (lower priority now that proxy is secured)
 
 ## Testing
 
