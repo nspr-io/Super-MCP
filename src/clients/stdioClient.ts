@@ -7,6 +7,9 @@ import { getLogger } from "../logging.js";
 
 const logger = getLogger();
 
+// Maximum recursion depth for process tree traversal (prevents runaway in pathological cases)
+const MAX_PROCESS_TREE_DEPTH = 20;
+
 /**
  * Kill a process tree to ensure all child/grandchild processes are terminated.
  * This is critical for MCP servers launched via wrappers like `npm run dev` or `npx`,
@@ -37,7 +40,13 @@ const killProcessTree = async (pid: number): Promise<void> => {
   } else {
     // On Unix/macOS: recursively find all descendants and kill them leaf-first
     // This ensures children don't get reparented before we can kill them
-    const getAllDescendants = (parentPid: number): Promise<number[]> => {
+    const getAllDescendants = (parentPid: number, depth = 0): Promise<number[]> => {
+      // Depth limit prevents infinite recursion in pathological cases
+      if (depth >= MAX_PROCESS_TREE_DEPTH) {
+        logger.warn("Process tree depth limit reached", { parentPid, depth, max: MAX_PROCESS_TREE_DEPTH });
+        return Promise.resolve([]);
+      }
+      
       return new Promise((resolve) => {
         // pgrep -P finds direct children; we recursively gather all descendants
         exec(`pgrep -P ${parentPid} 2>/dev/null`, async (error, stdout) => {
@@ -47,13 +56,17 @@ const killProcessTree = async (pid: number): Promise<void> => {
           }
           const directChildren = stdout.trim().split('\n').map(p => parseInt(p, 10)).filter(p => !isNaN(p));
           
-          // Recursively get grandchildren
+          // Recursively get grandchildren in parallel (reduces race window for PID reparenting)
+          const grandchildrenArrays = await Promise.all(
+            directChildren.map(childPid => getAllDescendants(childPid, depth + 1))
+          );
+          
+          // Flatten grandchildren arrays, then append direct children
+          // Result order: deepest descendants first, then work up to direct children
           const allDescendants: number[] = [];
-          for (const childPid of directChildren) {
-            const grandchildren = await getAllDescendants(childPid);
-            allDescendants.push(...grandchildren);
+          for (const arr of grandchildrenArrays) {
+            allDescendants.push(...arr);
           }
-          // Return children after their descendants (so we kill leaves first)
           allDescendants.push(...directChildren);
           resolve(allDescendants);
         });
