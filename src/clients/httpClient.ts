@@ -3,7 +3,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import PQueue from "p-queue";
-import { McpClient, PackageConfig } from "../types.js";
+import { McpClient, PackageConfig, ReadResourceResult } from "../types.js";
 import { getLogger } from "../logging.js";
 import { SimpleOAuthProvider, RefreshOnlyOAuthProvider } from "../auth/providers/index.js";
 
@@ -374,6 +374,40 @@ export class HttpMcpClient implements McpClient {
 
   async isAuthenticated(): Promise<boolean> {
     return this.isConnected;
+  }
+
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    if (!this.isConnected) {
+      throw new Error(`Package '${this.packageId}' is not connected`);
+    }
+
+    logger.info("Reading resource from HTTP MCP", {
+      package_id: this.packageId,
+      uri,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
+    });
+
+    return this.requestQueue.add(async () => {
+      try {
+        const response = await this.client.readResource({ uri });
+        return { contents: response.contents || [] };
+      } catch (error) {
+        logger.error("Failed to read resource", {
+          package_id: this.packageId,
+          uri,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }) as Promise<ReadResourceResult>;
+  }
+
+  supportsResources(): boolean {
+    // The MCP SDK Client doesn't expose server capabilities directly,
+    // so we optimistically assume resources are supported and let the
+    // request fail if they're not. This is consistent with how tools work.
+    return true;
   }
 
   async connectWithOAuth(): Promise<void> {

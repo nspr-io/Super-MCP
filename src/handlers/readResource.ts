@@ -1,0 +1,91 @@
+import { ERROR_CODES, ReadResourceResult } from "../types.js";
+import { PackageRegistry } from "../registry.js";
+import { Catalog } from "../catalog.js";
+import { getLogger } from "../logging.js";
+
+const logger = getLogger();
+
+export async function handleReadResource(
+  args: { uri: string },
+  registry: PackageRegistry,
+  catalog: Catalog
+): Promise<ReadResourceResult> {
+  const { uri } = args;
+
+  if (!uri) {
+    throw {
+      code: ERROR_CODES.INVALID_PARAMS,
+      message: "Missing required parameter: uri",
+    };
+  }
+
+  logger.info("Handling resource read request", { uri });
+
+  // Strategy 1: Use smart mapping from tool metadata
+  let packageId = catalog.getPackageForResourceUri(uri);
+
+  // Strategy 2: Fall back to explicit package prefix (ui://package-id/path)
+  if (!packageId) {
+    const prefixMatch = uri.match(/^ui:\/\/([^/]+)\//);
+    if (prefixMatch) {
+      const candidateId = prefixMatch[1];
+      if (registry.getPackage(candidateId)) {
+        packageId = candidateId;
+        logger.debug("Resolved package from URI prefix", { uri, package_id: packageId });
+      }
+    }
+  }
+
+  if (!packageId) {
+    const knownPrefixes = catalog.getKnownResourcePrefixes();
+    throw {
+      code: ERROR_CODES.RESOURCE_NOT_FOUND,
+      message: `No package found for resource URI: ${uri}. Known resource prefixes: ${knownPrefixes.join(", ") || "none"}`,
+    };
+  }
+
+  // Get client for package
+  const client = await registry.getClient(packageId);
+  if (!client) {
+    throw {
+      code: ERROR_CODES.PACKAGE_NOT_FOUND,
+      message: `Package not found: ${packageId}`,
+    };
+  }
+
+  // Check if client supports resources
+  if (!client.readResource) {
+    throw {
+      code: ERROR_CODES.CAPABILITY_NOT_SUPPORTED,
+      message: `Package '${packageId}' client does not support the resources capability`,
+    };
+  }
+
+  // Forward to upstream server
+  try {
+    logger.info("Reading resource from upstream package", { uri, package_id: packageId });
+    const result = await client.readResource(uri);
+    logger.info("Resource read successful", { 
+      uri, 
+      package_id: packageId,
+      content_count: result.contents?.length || 0 
+    });
+    return result;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    logger.error("Resource read failed", { uri, package_id: packageId, error: errorMessage });
+    
+    // Check for method not found error (server doesn't support resources)
+    if (errorMessage.includes("Method not found") || errorMessage.includes("-32601")) {
+      throw {
+        code: ERROR_CODES.CAPABILITY_NOT_SUPPORTED,
+        message: `Package '${packageId}' does not support the resources capability (Method not found)`,
+      };
+    }
+    
+    throw {
+      code: ERROR_CODES.DOWNSTREAM_ERROR,
+      message: `Failed to read resource from ${packageId}: ${errorMessage}`,
+    };
+  }
+}

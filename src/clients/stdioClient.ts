@@ -2,7 +2,7 @@ import { exec } from "child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import PQueue from "p-queue";
-import { McpClient, PackageConfig } from "../types.js";
+import { McpClient, PackageConfig, ReadResourceResult } from "../types.js";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
@@ -354,6 +354,34 @@ export class StdioMcpClient implements McpClient {
 
   async isAuthenticated(): Promise<boolean> {
     // Stdio MCPs are authenticated via environment variables at startup
+    return true;
+  }
+
+  async readResource(uri: string): Promise<ReadResourceResult> {
+    logger.info("Reading resource from stdio MCP", {
+      package_id: this.packageId,
+      uri,
+      queue_size: this.requestQueue.size,
+      queue_pending: this.requestQueue.pending,
+    });
+
+    return this.requestQueue.add(async () => {
+      try {
+        const response = await this.client.readResource({ uri });
+        return { contents: response.contents || [] };
+      } catch (error) {
+        logger.error("Failed to read resource from stdio MCP", {
+          package_id: this.packageId,
+          uri,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }) as Promise<ReadResourceResult>;
+  }
+
+  supportsResources(): boolean {
+    // Optimistically assume resources are supported; let the request fail if not
     return true;
   }
 }

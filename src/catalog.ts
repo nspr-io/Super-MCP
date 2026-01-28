@@ -28,6 +28,7 @@ export class Catalog {
   private cache: Map<string, PackageToolCache> = new Map();
   private registry: PackageRegistry;
   private globalEtag: string = "";
+  private resourceUriToPackage: Map<string, string> = new Map();
 
   constructor(registry: PackageRegistry) {
     this.registry = registry;
@@ -304,5 +305,87 @@ export class Catalog {
       message.includes("invalid_token") ||
       message.includes("authorization")
     );
+  }
+
+  // Resource URI mapping for MCP Apps support
+
+  /**
+   * Register resource URIs from tool metadata.
+   * Called when loading tools for a package to build the uri -> package mapping.
+   */
+  registerResourceUris(packageId: string, tools: any[]): void {
+    for (const tool of tools) {
+      const resourceUri = tool._meta?.ui?.resourceUri;
+      if (resourceUri && typeof resourceUri === "string") {
+        const prefix = this.extractUriPrefix(resourceUri);
+        if (prefix) {
+          this.resourceUriToPackage.set(prefix, packageId);
+          logger.debug("Registered resource URI prefix", {
+            package_id: packageId,
+            prefix,
+            full_uri: resourceUri,
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Look up which package owns a resource URI.
+   * Returns the package ID if found in the mapping, undefined otherwise.
+   */
+  getPackageForResourceUri(uri: string): string | undefined {
+    const prefix = this.extractUriPrefix(uri);
+    if (!prefix) return undefined;
+    
+    const packageId = this.resourceUriToPackage.get(prefix);
+    if (packageId) {
+      logger.debug("Found package for resource URI", {
+        uri,
+        prefix,
+        package_id: packageId,
+      });
+    }
+    return packageId;
+  }
+
+  /**
+   * Get all known resource URI prefixes for error messages.
+   */
+  getKnownResourcePrefixes(): string[] {
+    return Array.from(this.resourceUriToPackage.keys());
+  }
+
+  /**
+   * Clear resource URI mappings for a specific package.
+   * Called when a package is restarted or removed.
+   */
+  clearResourceUrisForPackage(packageId: string): void {
+    for (const [prefix, pkgId] of this.resourceUriToPackage.entries()) {
+      if (pkgId === packageId) {
+        this.resourceUriToPackage.delete(prefix);
+        logger.debug("Cleared resource URI prefix", { package_id: packageId, prefix });
+      }
+    }
+  }
+
+  /**
+   * Extract the URI prefix (scheme + authority) from a resource URI.
+   * e.g., "ui://viewer/app.html" -> "ui://viewer"
+   */
+  private extractUriPrefix(uri: string): string | null {
+    try {
+      // Handle ui:// scheme URIs
+      const match = uri.match(/^(ui:\/\/[^/]+)/);
+      if (match) {
+        return match[1];
+      }
+      // Handle other schemes (file://, etc.)
+      const url = new URL(uri);
+      return `${url.protocol}//${url.host}`;
+    } catch {
+      // Invalid URI
+      return null;
+    }
   }
 }

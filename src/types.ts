@@ -192,6 +192,15 @@ export interface AuthStatusOutput {
   expires_at?: string;
 }
 
+export interface ReadResourceResult {
+  contents: Array<{
+    uri: string;
+    mimeType?: string;
+    text?: string;
+    blob?: string;
+  }>;
+}
+
 export interface McpClient {
   connect(): Promise<void>;
   listTools(): Promise<any[]>;
@@ -200,6 +209,8 @@ export interface McpClient {
   healthCheck?(): Promise<"ok" | "error" | "needs_auth">;
   requiresAuth?(): Promise<boolean>;
   isAuthenticated?(): Promise<boolean>;
+  readResource?(uri: string): Promise<ReadResourceResult>;
+  supportsResources?(): boolean;
 }
 
 export interface AuthManager {
@@ -218,5 +229,7 @@ export const ERROR_CODES = {
   AUTH_INCOMPLETE: -32006,
   DOWNSTREAM_ERROR: -32007,
   TOOL_BLOCKED: -32008,
+  RESOURCE_NOT_FOUND: -32010,
+  CAPABILITY_NOT_SUPPORTED: -32011,
   INTERNAL_ERROR: -32603,
 } as const;

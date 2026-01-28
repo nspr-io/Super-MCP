@@ -1,7 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import PQueue from "p-queue";
 import { ERROR_CODES } from "./types.js";
@@ -21,6 +21,7 @@ import {
   handleGetHelp,
   handleRestartPackage,
   handleSearchTools,
+  handleReadResource,
 } from "./handlers/index.js";
 import { formatError } from "./utils/formatError.js";
 
@@ -62,6 +63,7 @@ export async function startServer(options: {
       {
         capabilities: {
           tools: {},
+          resources: {},
         },
       }
     );
@@ -420,6 +422,31 @@ Returns tool names, summaries, and argument skeletons. Use include_schemas=true 
           message: `${formatError(error)}. Try 'get_help(topic: "error_handling")' for general troubleshooting.`,
           data: { tool_name: name },
         };
+      }
+    });
+
+    // MCP Resources handlers for MCP Apps support
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
+      // Phase 1: Return empty list (minimal implementation)
+      // Can aggregate resources from packages in future if needed
+      logger.debug("Handling resources/list request (returning empty list)");
+      return { resources: [] };
+    });
+
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      const { uri } = request.params;
+      logger.info("Handling resources/read request", { uri });
+      
+      try {
+        const result = await handleReadResource({ uri }, registry, catalog);
+        // Cast to satisfy MCP SDK type requirements
+        return result as unknown as { contents: Array<{ uri: string; mimeType?: string; text?: string; blob?: string }> };
+      } catch (error) {
+        logger.error("Resource read failed", {
+          uri,
+          error: formatError(error),
+        });
+        throw error;
       }
     });
 
