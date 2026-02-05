@@ -1,7 +1,42 @@
 import { PackageRegistry } from "../registry.js";
+import { PackageConfig } from "../types.js";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
+
+// Limit concurrent health checks to avoid spawning too many MCP processes at once
+// This is especially important on Windows where process spawning is slower
+const HEALTH_CHECK_CONCURRENCY = 5;
+
+/**
+ * Run async functions with limited concurrency.
+ * Processes items in order but limits how many are in-flight simultaneously.
+ */
+async function mapWithConcurrencyLimit<T, R>(
+  items: T[],
+  fn: (item: T) => Promise<R>,
+  limit: number
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  const executing = new Set<Promise<void>>();
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    const promise = fn(item).then(result => {
+      results[i] = result;
+    }).finally(() => {
+      executing.delete(promise);
+    });
+    executing.add(promise);
+
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
+}
 
 export async function handleHealthCheckAll(
   input: { detailed?: boolean },
@@ -12,8 +47,11 @@ export async function handleHealthCheckAll(
   logger.info("Performing health check on all packages");
 
   const packages = registry.getPackages({ safe_only: false });
-  const results = await Promise.all(
-    packages.map(async (pkg) => {
+  
+  // Use concurrency-limited health checks to avoid overwhelming the system
+  const results = await mapWithConcurrencyLimit(
+    packages,
+    async (pkg: PackageConfig) => {
       try {
         const health = await registry.healthCheck(pkg.id);
         const client = await registry.getClient(pkg.id);
@@ -95,7 +133,8 @@ export async function handleHealthCheckAll(
         
         return diagnostic;
       }
-    })
+    },
+    HEALTH_CHECK_CONCURRENCY
   );
 
   const summary = {
