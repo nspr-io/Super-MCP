@@ -89,6 +89,7 @@ export class PackageRegistry {
   private packages: PackageConfig[];
   private clients: Map<string, McpClient> = new Map();
   private clientPromises: Map<string, Promise<McpClient>> = new Map();
+  private skippedPackages: SkippedPackage[] = [];
 
   constructor(config: SuperMcpConfig) {
     this.config = config;
@@ -447,6 +448,7 @@ export class PackageRegistry {
     // Validate normalized config - skip invalid entries instead of throwing
     const validationResult = PackageRegistry.validateConfig(registry.packages);
     registry.packages = validationResult.valid;
+    registry.skippedPackages = validationResult.skipped;
     
     // Emit skipped packages to stderr as structured JSON for consumers (e.g., Rebel) to parse
     if (validationResult.skipped.length > 0) {
@@ -640,6 +642,10 @@ export class PackageRegistry {
 
   getPackage(packageId: string): PackageConfig | undefined {
     return this.packages.find(pkg => pkg.id === packageId);
+  }
+
+  getSkippedPackages(): SkippedPackage[] {
+    return [...this.skippedPackages];
   }
 
   async getClient(packageId: string): Promise<McpClient> {

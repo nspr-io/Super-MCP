@@ -455,10 +455,9 @@ Returns tool names, summaries, and argument skeletons. Use include_schemas=true 
 
       // DNS rebinding protection - validate Host header
       // Must be placed BEFORE body parsing middleware
-      // Only applied to /mcp endpoint; /health is left open for external probes
       // Note: Server binds to 127.0.0.1 only (IPv4). If IPv6 binding is added,
       // also allow '::1' here.
-      app.use('/mcp', (req, res, next) => {
+      const dnsRebindingGuard: express.RequestHandler = (req, res, next) => {
         const host = req.headers.host?.split(':')[0]?.toLowerCase(); // Case-insensitive per RFC 7230
         if (host !== 'localhost' && host !== '127.0.0.1') {
           logger.warn("Request rejected - invalid Host header (DNS rebinding protection)", {
@@ -468,7 +467,10 @@ Returns tool names, summaries, and argument skeletons. Use include_schemas=true 
           return;
         }
         next();
-      });
+      };
+
+      // Apply DNS rebinding protection to /mcp endpoint; /health is left open for external probes
+      app.use('/mcp', dnsRebindingGuard);
 
       app.use(express.json());
 
@@ -586,6 +588,11 @@ Returns tool names, summaries, and argument skeletons. Use include_schemas=true 
           });
           res.status(500).json({ error: "Failed to build tool catalog" });
         }
+      });
+
+      // REST API endpoint for skipped servers (used by Rebel for startup diagnostics)
+      app.get("/api/skipped-servers", dnsRebindingGuard, (_req, res) => {
+        res.json({ packages: registry.getSkippedPackages() });
       });
 
       const mcpHandler = async (req: any, res: any) => {
