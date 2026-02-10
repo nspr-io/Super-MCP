@@ -10,12 +10,26 @@ const logger = getLogger();
 const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
 
 export async function handleUseTool(
-  input: UseToolInput,
+  input: UseToolInput & { _rebel_staged?: boolean; _rebel_staged_message?: string },
   registry: PackageRegistry,
   catalog: Catalog,
   validator: any
 ): Promise<any> {
-  let { package_id, tool_id, args, dry_run = false, max_output_chars } = input;
+  // Staged tool calls: the host process (toolSafetyService PreToolUse hook) intercepted
+  // this call for deferred user approval. It sets _rebel_staged via updatedInput so the
+  // SDK treats the call as "allowed" (preventing sibling-error cascade for parallel calls)
+  // while we return immediately without executing the underlying tool.
+  // See: src/main/services/toolSafetyService.ts — staging path.
+  if (input._rebel_staged) {
+    return {
+      content: [{ type: "text", text: input._rebel_staged_message ?? "Tool call staged for approval." }],
+    };
+  }
+
+  // Strip rebel-internal flags so they never leak to downstream tool handlers
+  const { _rebel_staged, _rebel_staged_message, ...cleanInput } = input;
+
+  let { package_id, tool_id, args, dry_run = false, max_output_chars } = cleanInput;
 
   // Handle namespaced tool IDs for backward compatibility and Claude Code subagent support
   // Tool IDs now follow the format: "PackageName__tool_name"
