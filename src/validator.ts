@@ -31,7 +31,10 @@ export class Validator {
     addFormats(this.ajv);
   }
 
-  validate(schema: any, data: any, context?: { package_id?: string; tool_id?: string }): void {
+  /** Validates data against schema. Mutates `data` in place to strip unknown
+   *  top-level properties when `additionalProperties: false`. Returns names of
+   *  any stripped properties (empty array if none). */
+  validate(schema: any, data: any, context?: { package_id?: string; tool_id?: string }): string[] {
     logger.debug("Validating arguments", {
       package_id: context?.package_id,
       tool_id: context?.tool_id,
@@ -41,6 +44,32 @@ export class Validator {
 
     if (!schema) {
       throw new ValidationError("Schema is required", []);
+    }
+
+    // Strip unknown top-level properties when schema forbids them.
+    // Claude models sometimes hallucinate extra args (e.g. "limit") that cause
+    // validation failures and retry loops. We strip and log rather than reject.
+    const strippedArgs: string[] = [];
+    if (
+      schema.additionalProperties === false &&
+      schema.properties &&
+      typeof data === 'object' &&
+      data !== null
+    ) {
+      const allowed = new Set(Object.keys(schema.properties));
+      for (const key of Object.keys(data)) {
+        if (!allowed.has(key)) {
+          strippedArgs.push(key);
+          delete data[key];
+        }
+      }
+      if (strippedArgs.length > 0) {
+        logger.warn("Stripped unknown properties from tool args", {
+          package_id: context?.package_id,
+          tool_id: context?.tool_id,
+          stripped: strippedArgs,
+        });
+      }
     }
 
     // Compile schema with better error handling for format issues
@@ -83,6 +112,8 @@ export class Validator {
       package_id: context?.package_id,
       tool_id: context?.tool_id,
     });
+
+    return strippedArgs;
   }
 }
 

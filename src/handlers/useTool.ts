@@ -120,8 +120,9 @@ export async function handleUseTool(
   }
 
   // Validate arguments unconditionally (before checking dry_run)
+  let strippedArgs: string[] = [];
   try {
-    validator.validate(schema, args, { package_id, tool_id });
+    strippedArgs = validator.validate(schema, args, { package_id, tool_id });
   } catch (error) {
     if (error instanceof ValidationError) {
       let helpMessage = `Argument validation failed for tool '${tool_id}' in package '${package_id}'.\n`;
@@ -171,11 +172,16 @@ export async function handleUseTool(
       telemetry: { duration_ms: 0, status: "ok" },
     };
 
+    let dryRunJson = JSON.stringify(result, null, 2);
+    if (strippedArgs.length > 0) {
+      dryRunJson += `\n\nNote: Removed unknown arguments before validation: ${strippedArgs.join(', ')}. These are not valid for this tool.`;
+    }
+
     return {
       content: [
         {
           type: "text",
-          text: JSON.stringify(result, null, 2),
+          text: dryRunJson,
         },
       ],
       isError: false,
@@ -233,6 +239,10 @@ export async function handleUseTool(
     } else {
       result.telemetry.output_chars = originalOutputChars;
       outputJson = JSON.stringify(result, null, 2);
+    }
+
+    if (strippedArgs.length > 0) {
+      outputJson += `\n\nNote: Removed unknown arguments before execution: ${strippedArgs.join(', ')}. These are not valid for this tool.`;
     }
 
     return {
