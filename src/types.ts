@@ -211,6 +211,7 @@ export interface McpClient {
   isAuthenticated?(): Promise<boolean>;
   readResource?(uri: string): Promise<ReadResourceResult>;
   supportsResources?(): boolean;
+  hasPendingRequests?(): boolean;
 }
 
 export interface AuthManager {

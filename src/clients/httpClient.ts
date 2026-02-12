@@ -410,6 +410,10 @@ export class HttpMcpClient implements McpClient {
     return true;
   }
 
+  hasPendingRequests(): boolean {
+    return this.requestQueue.pending > 0 || this.requestQueue.size > 0;
+  }
+
   async connectWithOAuth(): Promise<void> {
     await this.initializeOAuthIfNeeded(true);
     

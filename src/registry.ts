@@ -90,6 +90,9 @@ export class PackageRegistry {
   private clients: Map<string, McpClient> = new Map();
   private clientPromises: Map<string, Promise<McpClient>> = new Map();
   private skippedPackages: SkippedPackage[] = [];
+  private lastActivity: Map<string, number> = new Map();
+  private reaperInterval: ReturnType<typeof setInterval> | null = null;
+  private reaperTimeoutMs: number = 300_000; // 5 minutes default
 
   constructor(config: SuperMcpConfig) {
     this.config = config;
@@ -656,12 +659,22 @@ export class PackageRegistry {
       if (client.healthCheck) {
         const health = await client.healthCheck();
         if (health === "ok") {
+          // Update activity for stdio clients
+          const config = this.getPackage(packageId);
+          if (config?.transport === "stdio") {
+            this.lastActivity.set(packageId, Date.now());
+          }
           return client;
         }
         // Client exists but not healthy, remove it
         this.clients.delete(packageId);
         client = undefined;
       } else {
+        // Update activity for stdio clients
+        const config = this.getPackage(packageId);
+        if (config?.transport === "stdio") {
+          this.lastActivity.set(packageId, Date.now());
+        }
         return client;
       }
     }
@@ -696,6 +709,10 @@ export class PackageRegistry {
     try {
       client = await clientPromise;
       this.clients.set(packageId, client);
+      // Update activity for stdio clients on initial connection
+      if (config.transport === "stdio") {
+        this.lastActivity.set(packageId, Date.now());
+      }
       return client;
     } catch (error) {
       // Add helpful context to connection errors
@@ -728,6 +745,114 @@ export class PackageRegistry {
     }
   }
   
+  /**
+   * Notify that a package was actively used (e.g., after a tool call).
+   * Resets the idle timer for the given package.
+   */
+  notifyActivity(packageId: string): void {
+    this.lastActivity.set(packageId, Date.now());
+  }
+
+  /**
+   * Start the idle reaper that periodically closes idle stdio clients.
+   * Reads SUPER_MCP_IDLE_TIMEOUT_MS from environment (default: 300000ms = 5 minutes).
+   * A value of 0 disables reaping entirely. Idempotent — safe to call multiple times.
+   */
+  startIdleReaper(): void {
+    // Already running — no-op
+    if (this.reaperInterval) {
+      return;
+    }
+
+    const envTimeout = process.env.SUPER_MCP_IDLE_TIMEOUT_MS;
+    if (envTimeout !== undefined) {
+      const parsed = parseInt(envTimeout, 10);
+      if (isNaN(parsed) || parsed < 0) {
+        logger.warn("Invalid SUPER_MCP_IDLE_TIMEOUT_MS value, using default", {
+          value: envTimeout,
+          default_ms: this.reaperTimeoutMs,
+        });
+      } else if (parsed === 0) {
+        logger.info("Idle reaper disabled (SUPER_MCP_IDLE_TIMEOUT_MS=0)");
+        return;
+      } else {
+        this.reaperTimeoutMs = parsed;
+      }
+    }
+
+    this.reaperInterval = setInterval(() => this.sweepIdleClients(), 60_000);
+    this.reaperInterval.unref();
+
+    logger.info("Idle reaper started", {
+      timeout_ms: this.reaperTimeoutMs,
+      sweep_interval_ms: 60_000,
+    });
+  }
+
+  /**
+   * Stop the idle reaper interval.
+   */
+  stopIdleReaper(): void {
+    if (this.reaperInterval) {
+      clearInterval(this.reaperInterval);
+      this.reaperInterval = null;
+    }
+  }
+
+  /**
+   * Sweep all connected clients and close those that have been idle beyond the timeout.
+   * Only targets stdio clients — HTTP clients are stateless and don't hold child processes.
+   */
+  private sweepIdleClients(): void {
+    const now = Date.now();
+    const reaped: string[] = [];
+
+    for (const [packageId, client] of this.clients.entries()) {
+      // Skip if a connection is in progress for this package
+      if (this.clientPromises.has(packageId)) {
+        logger.debug("Skipping reap: connection in progress", { package_id: packageId });
+        continue;
+      }
+
+      // Only reap stdio clients (HTTP clients are stateless, no child process)
+      const config = this.getPackage(packageId);
+      if (!config || config.transport !== "stdio") {
+        continue;
+      }
+
+      // Skip if the client has in-flight or queued requests
+      if (client.hasPendingRequests?.()) {
+        logger.debug("Skipping reap: pending requests", { package_id: packageId });
+        continue;
+      }
+
+      // Check if idle beyond threshold
+      const lastActive = this.lastActivity.get(packageId) ?? 0;
+      if (now - lastActive < this.reaperTimeoutMs) {
+        continue;
+      }
+
+      // Reap this client
+      client.close().catch((error) => {
+        logger.warn("Error closing idle client during reap", {
+          package_id: packageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      this.clients.delete(packageId);
+      this.lastActivity.delete(packageId);
+      reaped.push(packageId);
+    }
+
+    if (reaped.length > 0) {
+      logger.info("Reaped idle stdio MCP clients", {
+        count: reaped.length,
+        reaped,
+      });
+    }
+  }
+
   private async createAndConnectClient(packageId: string, config: PackageConfig): Promise<McpClient> {
     let client: McpClient;
     
@@ -841,6 +966,8 @@ export class PackageRegistry {
       }
       this.clients.delete(packageId);
     }
+
+    this.lastActivity.delete(packageId);
     
     // Re-normalize from raw config to pick up env var changes
     const serverConfig = this.config.mcpServers?.[packageId];
@@ -875,6 +1002,8 @@ export class PackageRegistry {
   }
 
   async closeAll(): Promise<void> {
+    this.stopIdleReaper();
+
     logger.info("Closing all clients", {
       client_count: this.clients.size,
     });
@@ -889,6 +1018,7 @@ export class PackageRegistry {
 
     await Promise.allSettled(closePromises);
     this.clients.clear();
+    this.lastActivity.clear();
 
     logger.info("All clients closed");
   }

@@ -192,6 +192,7 @@ export async function handleUseTool(
   try {
     const client = await registry.getClient(package_id);
     const toolResult = await client.callTool(tool_id, args);
+    registry.notifyActivity(package_id);
     const duration = Date.now() - startTime;
 
     const result: UseToolOutput = {
@@ -255,6 +256,7 @@ export async function handleUseTool(
       isError: false,
     };
   } catch (error) {
+    registry.notifyActivity(package_id);
     const duration = Date.now() - startTime;
     const errorMessage = error instanceof Error ? error.message : String(error);
 

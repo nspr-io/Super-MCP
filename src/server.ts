@@ -49,6 +49,7 @@ export async function startServer(options: {
 
   try {
     const registry = await PackageRegistry.fromConfigFiles(paths);
+    registry.startIdleReaper();
     const catalog = new Catalog(registry);
     const validator = getValidator();
     

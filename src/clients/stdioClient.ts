@@ -384,4 +384,8 @@ export class StdioMcpClient implements McpClient {
     // Optimistically assume resources are supported; let the request fail if not
     return true;
   }
+
+  hasPendingRequests(): boolean {
+    return this.requestQueue.pending > 0 || this.requestQueue.size > 0;
+  }
 }
