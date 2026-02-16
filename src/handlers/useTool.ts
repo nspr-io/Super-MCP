@@ -136,12 +136,19 @@ export async function handleUseTool(
           
           if (err.keyword === "required") {
             helpMessage += ` (missing: ${err.params?.missingProperty})`;
+          } else if (err.keyword === "additionalProperties" && err.params?.additionalProperty) {
+            helpMessage += ` (remove: "${err.params.additionalProperty}")`;
           } else if (err.keyword === "type") {
             helpMessage += ` (expected: ${err.params?.type}, got: ${typeof err.data})`;
           } else if (err.keyword === "enum") {
             helpMessage += ` (allowed values: ${err.params?.allowedValues?.join(", ")})`;
           }
         });
+      }
+
+      const validArgs = schema?.properties ? Object.keys(schema.properties) : [];
+      if (validArgs.length > 0) {
+        helpMessage += `\n\nValid arguments for this tool: ${validArgs.join(', ')}`;
       }
       
       helpMessage += `\n\nTo see the correct schema, run:`;
@@ -174,7 +181,10 @@ export async function handleUseTool(
 
     let dryRunJson = JSON.stringify(result, null, 2);
     if (strippedArgs.length > 0) {
-      dryRunJson += `\n\nNote: Removed unknown arguments before validation: ${strippedArgs.join(', ')}. These are not valid for this tool.`;
+      const validArgs = schema?.properties ? Object.keys(schema.properties) : [];
+      let note = `\n\nNote: Removed unknown arguments: ${strippedArgs.join(', ')}.`;
+      if (validArgs.length > 0) note += ` Valid arguments for this tool: ${validArgs.join(', ')}`;
+      dryRunJson += note;
     }
 
     return {
@@ -243,7 +253,10 @@ export async function handleUseTool(
     }
 
     if (strippedArgs.length > 0) {
-      outputJson += `\n\nNote: Removed unknown arguments before execution: ${strippedArgs.join(', ')}. These are not valid for this tool.`;
+      const validArgs = schema?.properties ? Object.keys(schema.properties) : [];
+      let note = `\n\nNote: Removed unknown arguments: ${strippedArgs.join(', ')}.`;
+      if (validArgs.length > 0) note += ` Valid arguments for this tool: ${validArgs.join(', ')}`;
+      outputJson += note;
     }
 
     return {
