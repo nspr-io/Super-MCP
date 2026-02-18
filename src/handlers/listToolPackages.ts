@@ -49,8 +49,20 @@ export async function handleListToolPackages(
     packages,
     async (pkg: PackageConfig) => {
       await catalog.ensurePackageLoaded(pkg.id);
-      const toolCount = catalog.countTools(pkg.id);
+
+      // Run health check BEFORE reading catalog data so we can sync stale state first
       const health = include_health ? await registry.healthCheck(pkg.id) : undefined;
+
+      // Sync catalog if registry reports healthy but catalog has stale error
+      if (health === "ok") {
+        const currentStatus = catalog.getPackageStatus(pkg.id);
+        if (currentStatus === "error" || currentStatus === "auth_required") {
+          catalog.clearPackage(pkg.id);
+          await catalog.ensurePackageLoaded(pkg.id);
+        }
+      }
+
+      const toolCount = catalog.countTools(pkg.id);
       const summary = await catalog.buildPackageSummary(pkg);
       const catalogStatus = catalog.getPackageStatus(pkg.id);
       const catalogError = catalog.getPackageError(pkg.id);

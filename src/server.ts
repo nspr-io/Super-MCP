@@ -355,19 +355,19 @@ Returns tool names, summaries, and argument skeletons. Use include_schemas=true 
             return await handleUseTool(args as any, registry, catalog, validator);
 
           case "health_check_all":
-            return await handleHealthCheckAll(args as any, registry);
+            return await handleHealthCheckAll(args as any, registry, catalog);
 
           case "health_check":
-            return await handleHealthCheckPackage(args as any, registry);
+            return await handleHealthCheckPackage(args as any, registry, catalog);
 
           case "authenticate":
-            return await handleAuthenticate(args as any, registry);
+            return await handleAuthenticate(args as any, registry, catalog);
 
           case "get_help":
             return await handleGetHelp(args as any, registry);
 
           case "restart_package":
-            return await handleRestartPackage(args as any, registry);
+            return await handleRestartPackage(args as any, registry, catalog);
 
           case "search_tools":
             return await handleSearchTools(args as any, registry, catalog);

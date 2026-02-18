@@ -1,4 +1,5 @@
 import { PackageRegistry } from "../registry.js";
+import { Catalog } from "../catalog.js";
 import { PackageConfig } from "../types.js";
 import { getLogger } from "../logging.js";
 
@@ -40,7 +41,8 @@ async function mapWithConcurrencyLimit<T, R>(
 
 export async function handleHealthCheckAll(
   input: { detailed?: boolean },
-  registry: PackageRegistry
+  registry: PackageRegistry,
+  catalog: Catalog
 ): Promise<any> {
   const { detailed = false } = input;
 
@@ -54,6 +56,13 @@ export async function handleHealthCheckAll(
     async (pkg: PackageConfig) => {
       try {
         const health = await registry.healthCheck(pkg.id);
+
+        // Sync catalog if registry reports healthy but catalog has stale error
+        const catalogStatus = catalog.getPackageStatus(pkg.id);
+        if (health === "ok" && (catalogStatus === "error" || catalogStatus === "auth_required")) {
+          catalog.clearPackage(pkg.id);
+        }
+
         const client = await registry.getClient(pkg.id);
         const requiresAuth = client.requiresAuth ? await client.requiresAuth() : false;
         const isAuthenticated = requiresAuth && client.isAuthenticated ? await client.isAuthenticated() : true;

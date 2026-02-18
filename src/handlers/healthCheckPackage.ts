@@ -1,4 +1,5 @@
 import { PackageRegistry } from "../registry.js";
+import { Catalog } from "../catalog.js";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
@@ -10,7 +11,8 @@ export interface HealthCheckPackageOutput {
 
 export async function handleHealthCheckPackage(
   input: { package_id: string },
-  registry: PackageRegistry
+  registry: PackageRegistry,
+  catalog: Catalog
 ): Promise<any> {
   const { package_id } = input;
 
@@ -33,6 +35,12 @@ export async function handleHealthCheckPackage(
   logger.info("Handling health_check request", { package_id });
 
   const health = await registry.healthCheck(package_id);
+
+  // Sync catalog if registry reports healthy but catalog has stale error
+  const catalogStatus = catalog.getPackageStatus(package_id);
+  if (health === "ok" && (catalogStatus === "error" || catalogStatus === "auth_required")) {
+    catalog.clearPackage(package_id);
+  }
 
   const result: HealthCheckPackageOutput = {
     package_id,

@@ -70,6 +70,13 @@ export async function handleReadResource(
       package_id: packageId,
       content_count: result.contents?.length || 0 
     });
+
+    // Sync catalog after verified success — clear stale error cache
+    const catalogStatus = catalog.getPackageStatus(packageId);
+    if (catalogStatus === "error" || catalogStatus === "auth_required") {
+      catalog.clearPackage(packageId);
+    }
+
     return result;
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);

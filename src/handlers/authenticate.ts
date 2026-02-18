@@ -1,4 +1,5 @@
 import { PackageRegistry } from "../registry.js";
+import { Catalog } from "../catalog.js";
 import { getLogger } from "../logging.js";
 import { findAvailablePort, checkPortAvailable } from "../utils/portFinder.js";
 import { SimpleOAuthProvider } from "../auth/providers/simple.js";
@@ -8,7 +9,8 @@ const logger = getLogger();
 
 export async function handleAuthenticate(
   input: { package_id: string; wait_for_completion?: boolean },
-  registry: PackageRegistry
+  registry: PackageRegistry,
+  catalog: Catalog
 ): Promise<any> {
   const { package_id, wait_for_completion = true } = input;
   
@@ -71,6 +73,7 @@ export async function handleAuthenticate(
         );
         const tools = await Promise.race([toolsPromise, timeoutPromise]);
         logger.info("Tools accessible", { package_id, tool_count: tools.length });
+        catalog.clearPackage(package_id);
         return {
           content: [
             {
@@ -254,6 +257,7 @@ export async function handleAuthenticate(
         
         if (health === "ok") {
           logger.info("Authentication verified successfully", { package_id });
+          catalog.clearPackage(package_id);
           return {
             content: [
               {
@@ -269,6 +273,7 @@ export async function handleAuthenticate(
           };
         } else if (health === "timeout") {
           logger.info("Authentication completed, verification pending (slow server)", { package_id });
+          catalog.clearPackage(package_id);
           return {
             content: [
               {
@@ -330,6 +335,7 @@ export async function handleAuthenticate(
     const health = httpClient.healthCheck ? await httpClient.healthCheck() : "needs_auth";
     
     if (health === "ok") {
+      catalog.clearPackage(package_id);
       return {
         content: [
           {
