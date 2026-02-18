@@ -149,7 +149,9 @@ export class PackageRegistry {
           auth: extConfig.auth,
           extra_headers: extConfig.headers,
           visibility: extConfig.visibility || "default",
-          oauth: extConfig.oauth
+          oauth: extConfig.oauth,
+          oauthClientId: extConfig.oauthClientId,
+          oauthClientSecret: extConfig.oauthClientSecret,
         };
         
         packages.push(pkg);
@@ -273,6 +275,8 @@ export class PackageRegistry {
             description: pkg.description,
             visibility: pkg.visibility,
             oauth: pkg.oauth,
+            oauthClientId: pkg.oauthClientId,
+            oauthClientSecret: pkg.oauthClientSecret,
             auth: pkg.auth
           } as any;
         }
@@ -921,7 +925,9 @@ export class PackageRegistry {
       auth: extConfig.auth,
       extra_headers: extConfig.headers,
       visibility: extConfig.visibility || "default",
-      oauth: extConfig.oauth
+      oauth: extConfig.oauth,
+      oauthClientId: extConfig.oauthClientId,
+      oauthClientSecret: extConfig.oauthClientSecret,
     };
   }
 

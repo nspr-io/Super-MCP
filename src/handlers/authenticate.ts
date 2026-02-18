@@ -154,7 +154,11 @@ export async function handleAuthenticate(
       callbackServer.setServiceId(package_id);
       
       // Create OAuth provider early and generate state for CSRF protection
-      oauthProvider = new SimpleOAuthProvider(package_id, oauthPort);
+      // Pass static credentials from config if available (for servers without DCR like Asana V2)
+      const staticCreds = pkg.oauthClientId
+        ? { clientId: pkg.oauthClientId, clientSecret: pkg.oauthClientSecret }
+        : undefined;
+      oauthProvider = new SimpleOAuthProvider(package_id, oauthPort, staticCreds);
       await oauthProvider.initialize();
       
       // Check for port mismatch and invalidate stale credentials if needed
@@ -220,10 +224,20 @@ export async function handleAuthenticate(
       
       try {
         connectPromise.catch(err => {
-          logger.debug("OAuth redirect initiated (expected)", {
-            package_id,
-            error: formatError(err)
-          });
+          const errMsg = formatError(err);
+          // DCR failures are NOT expected -- they mean the server doesn't support dynamic registration
+          // and the auth flow will never complete. Log as error so it's visible in diagnostics.
+          if (typeof errMsg === 'string' && errMsg.includes("does not support dynamic client registration")) {
+            logger.error("OAuth failed: server does not support dynamic client registration. Configure static oauthClientId/oauthClientSecret.", {
+              package_id,
+              error: errMsg,
+            });
+          } else {
+            logger.debug("OAuth redirect initiated (expected)", {
+              package_id,
+              error: errMsg,
+            });
+          }
         });
         
         // Wait for callback with state validation for CSRF protection
