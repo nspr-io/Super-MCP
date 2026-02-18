@@ -49,6 +49,9 @@ export interface ExtendedServerConfig extends StandardServerConfig {
   visibility?: "default" | "hidden";
   auth?: AuthConfig;
   oauth?: boolean; // Enable OAuth for this server
+  // Pre-registered OAuth client credentials (for servers that don't support DCR)
+  oauthClientId?: string;
+  oauthClientSecret?: string;
 }
 
 export interface PackageConfig {
@@ -66,6 +69,9 @@ export interface PackageConfig {
   extra_headers?: Record<string, string>;
   visibility: "default" | "hidden";
   oauth?: boolean; // Enable OAuth for this server
+  // Pre-registered OAuth client credentials (for servers that don't support DCR)
+  oauthClientId?: string;
+  oauthClientSecret?: string;
   timeout?: number; // Tool execution timeout in milliseconds
 }
 

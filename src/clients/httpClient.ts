@@ -6,6 +6,7 @@ import PQueue from "p-queue";
 import { McpClient, PackageConfig, ReadResourceResult } from "../types.js";
 import { getLogger } from "../logging.js";
 import { SimpleOAuthProvider, RefreshOnlyOAuthProvider } from "../auth/providers/index.js";
+import type { StaticOAuthCredentials } from "../auth/providers/simple.js";
 
 const logger = getLogger();
 
@@ -57,10 +58,21 @@ export class HttpMcpClient implements McpClient {
     );
   }
   
+  private getStaticCredentials(): StaticOAuthCredentials | undefined {
+    if (this.config.oauthClientId) {
+      return {
+        clientId: this.config.oauthClientId,
+        clientSecret: this.config.oauthClientSecret,
+      };
+    }
+    return undefined;
+  }
+
   private async initializeOAuthIfNeeded(forceOAuth: boolean = false) {
     if (this.config.oauth && !this.oauthProvider) {
       // Use external provider if provided, otherwise create a new one
-      const simpleProvider = this.externalOAuthProvider ?? new SimpleOAuthProvider(this.packageId, this.oauthPort);
+      const staticCreds = this.getStaticCredentials();
+      const simpleProvider = this.externalOAuthProvider ?? new SimpleOAuthProvider(this.packageId, this.oauthPort, staticCreds);
       
       // Only initialize if we created it (external provider should already be initialized)
       if (!this.externalOAuthProvider) {

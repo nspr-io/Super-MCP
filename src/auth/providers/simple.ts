@@ -11,6 +11,11 @@ const logger = getLogger();
 /**
  * Simple OAuth provider that opens browser for authorization
  */
+export interface StaticOAuthCredentials {
+  clientId: string;
+  clientSecret?: string;
+}
+
 export class SimpleOAuthProvider implements OAuthClientProvider {
   private packageId: string;
   private savedTokens?: any;
@@ -19,11 +24,26 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   private tokenStoragePath: string;
   private oauthPort: number;
   private stateValue?: string;
+  private staticCredentials?: StaticOAuthCredentials;
   
-  constructor(packageId: string, oauthPort: number = 5173) {
+  constructor(packageId: string, oauthPort: number = 5173, staticCredentials?: StaticOAuthCredentials) {
     this.packageId = packageId;
     this.oauthPort = oauthPort;
     this.tokenStoragePath = path.join(homedir(), ".super-mcp", "oauth-tokens");
+    this.staticCredentials = staticCredentials;
+    
+    // Pre-populate client info from static credentials (skips DCR)
+    if (staticCredentials) {
+      this.savedClientInfo = {
+        client_id: staticCredentials.clientId,
+        ...(staticCredentials.clientSecret && { client_secret: staticCredentials.clientSecret }),
+        redirect_uris: [`http://localhost:${oauthPort}/oauth/callback`],
+      };
+      logger.info("Using pre-registered OAuth client credentials (DCR skipped)", {
+        package_id: packageId,
+        client_id: staticCredentials.clientId,
+      });
+    }
   }
   
   /**
@@ -53,16 +73,19 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   }
   
   private async loadPersistedData() {
-    try {
-      const clientPath = path.join(this.tokenStoragePath, `${this.packageId}_client.json`);
-      const clientData = await fs.readFile(clientPath, "utf8");
-      this.savedClientInfo = JSON.parse(clientData);
-      logger.debug("Loaded persisted client info", { 
-        package_id: this.packageId,
-        client_id: this.savedClientInfo?.client_id 
-      });
-    } catch (error) {
-      // No saved client info
+    // Skip loading persisted client info if static credentials were provided
+    if (!this.staticCredentials) {
+      try {
+        const clientPath = path.join(this.tokenStoragePath, `${this.packageId}_client.json`);
+        const clientData = await fs.readFile(clientPath, "utf8");
+        this.savedClientInfo = JSON.parse(clientData);
+        logger.debug("Loaded persisted client info", { 
+          package_id: this.packageId,
+          client_id: this.savedClientInfo?.client_id 
+        });
+      } catch (error) {
+        // No saved client info
+      }
     }
     
     try {
@@ -92,10 +115,37 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   }
   
   async clientInformation() {
+    // Re-hydrate from static credentials if cleared by invalidateCredentials()
+    if (!this.savedClientInfo && this.staticCredentials) {
+      this.savedClientInfo = {
+        client_id: this.staticCredentials.clientId,
+        ...(this.staticCredentials.clientSecret && { client_secret: this.staticCredentials.clientSecret }),
+        redirect_uris: [`http://localhost:${this.oauthPort}/oauth/callback`],
+      };
+      logger.debug("Restored static OAuth client info after invalidation", {
+        package_id: this.packageId,
+        client_id: this.staticCredentials.clientId,
+      });
+    }
     return this.savedClientInfo;
   }
   
   async saveClientInformation(info: any) {
+    // For static credentials, update redirect_uris but keep the original client_id/secret
+    if (this.staticCredentials) {
+      this.savedClientInfo = {
+        ...this.savedClientInfo,
+        ...info,
+        client_id: this.staticCredentials.clientId,
+        client_secret: this.staticCredentials.clientSecret,
+      };
+      logger.debug("Updated static OAuth client info (credentials preserved)", {
+        package_id: this.packageId,
+        client_id: this.staticCredentials.clientId,
+      });
+      return;
+    }
+    
     this.savedClientInfo = info;
     
     try {
@@ -273,6 +323,19 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
       
       if (isNaN(savedPort) || savedPort === this.oauthPort) {
         return false; // No mismatch
+      }
+      
+      // For static credentials, just update the redirect URI (don't invalidate the client)
+      if (this.staticCredentials) {
+        this.savedClientInfo.redirect_uris = [`http://localhost:${this.oauthPort}/oauth/callback`];
+        logger.info("Updated static OAuth redirect_uri for new port", {
+          package_id: this.packageId,
+          old_port: savedPort,
+          new_port: this.oauthPort,
+        });
+        // Still invalidate tokens (they may be bound to the old redirect_uri)
+        await this.invalidateCredentials('tokens');
+        return true;
       }
       
       logger.warn("OAuth port mismatch detected, invalidating stale credentials", {
