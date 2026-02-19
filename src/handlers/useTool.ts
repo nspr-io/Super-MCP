@@ -101,64 +101,13 @@ export async function handleUseTool(
       data: { package_id, status: packageStatus },
     };
   }
-  // When the catalog failed to load tools (e.g., server doesn't respond to tools/list),
-  // attempt a passthrough call rather than hard-failing. Some MCP servers support
-  // tools/call without supporting tools/list (e.g., Figma Desktop MCP).
-  // Skip schema validation since we don't have the schema.
-  const catalogDegraded = packageStatus === "error";
-  if (catalogDegraded) {
+  if (packageStatus === "error") {
     const reason = catalog.getPackageError(package_id) || "See logs for details";
-    logger.warn("Catalog unavailable, attempting passthrough tool call", {
-      package_id,
-      tool_id,
-      catalog_error: reason,
-    });
-
-    if (dry_run) {
-      throw {
-        code: ERROR_CODES.PACKAGE_UNAVAILABLE,
-        message: `Package '${package_id}' catalog is unavailable (${reason}). Cannot dry-run without schema.`,
-        data: { package_id, status: packageStatus },
-      };
-    }
-
-    const startTime = Date.now();
-    try {
-      const client = await registry.getClient(package_id);
-      const toolResult = await client.callTool(tool_id, args);
-      registry.notifyActivity(package_id);
-      const duration = Date.now() - startTime;
-
-      logger.info("Passthrough tool call succeeded despite catalog error", {
-        package_id,
-        tool_id,
-        duration_ms: duration,
-      });
-
-      const result: UseToolOutput = {
-        package_id,
-        tool_id,
-        args_used: args,
-        result: toolResult,
-        telemetry: { duration_ms: duration, status: "ok", passthrough: true },
-      };
-
-      let outputJson = JSON.stringify(result, null, 2);
-      if (max_output_chars && outputJson.length > max_output_chars) {
-        outputJson = outputJson.slice(0, max_output_chars) +
-          `\n\n[OUTPUT TRUNCATED: ${max_output_chars.toLocaleString()} of ${outputJson.length.toLocaleString()} chars]`;
-      }
-      return { content: [{ type: "text", text: outputJson }], isError: false };
-    } catch (error) {
-      registry.notifyActivity(package_id);
-      const duration = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      throw {
-        code: ERROR_CODES.PACKAGE_UNAVAILABLE,
-        message: `Package '${package_id}' is unavailable: catalog error (${reason}), passthrough also failed (${errorMessage})`,
-        data: { package_id, tool_id, status: packageStatus, duration_ms: duration },
-      };
-    }
+    throw {
+      code: ERROR_CODES.PACKAGE_UNAVAILABLE,
+      message: `Package '${package_id}' is unavailable: ${reason}`,
+      data: { package_id, status: packageStatus },
+    };
   }
 
   const schema = await catalog.getToolSchema(package_id, tool_id);
