@@ -284,15 +284,18 @@ export class HttpMcpClient implements McpClient {
       throw new Error(`Package '${this.packageId}' is not connected`);
     }
 
+    const timeout = parseInt(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT || '10000');
+
     logger.info("Listing tools from HTTP MCP", {
       package_id: this.packageId,
+      timeout_ms: timeout,
       queue_size: this.requestQueue.size,
       queue_pending: this.requestQueue.pending,
     });
 
     return this.requestQueue.add(async () => {
       try {
-        const response = await this.client.listTools();
+        const response = await this.client.listTools(undefined, { timeout });
         return response.tools || [];
       } catch (error) {
         logger.error("Failed to list tools", {

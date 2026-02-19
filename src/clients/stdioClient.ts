@@ -226,15 +226,18 @@ export class StdioMcpClient implements McpClient {
   }
 
   async listTools(): Promise<any[]> {
+    const timeout = parseInt(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT || '10000');
+
     logger.info("Listing tools from stdio MCP", {
       package_id: this.packageId,
+      timeout_ms: timeout,
       queue_size: this.requestQueue.size,
       queue_pending: this.requestQueue.pending,
     });
 
     return this.requestQueue.add(async () => {
       try {
-        const response = await this.client.listTools();
+        const response = await this.client.listTools(undefined, { timeout });
         
         logger.info("Retrieved tools from stdio MCP", {
           package_id: this.packageId,
