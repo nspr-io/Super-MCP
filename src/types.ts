@@ -173,6 +173,7 @@ export interface UseToolOutput {
     output_chars?: number;
     output_truncated?: boolean;
     original_output_chars?: number;
+    passthrough?: boolean;
   };
 }
 
