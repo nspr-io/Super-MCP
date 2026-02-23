@@ -10,6 +10,40 @@ import type { StaticOAuthCredentials } from "../auth/providers/simple.js";
 
 const logger = getLogger();
 
+/**
+ * Wraps a fetch function to normalize Response objects from foreign realms.
+ *
+ * The MCP SDK's `parseErrorResponse()` uses `input instanceof Response` to
+ * detect Response objects. This check fails when the fetch implementation
+ * returns a Response from a different realm (e.g., undici vs native, or
+ * bundled Node.js in Electron). When it fails, the SDK passes the raw object
+ * to JSON.parse(), producing: "[object Response]" is not valid JSON.
+ *
+ * This wrapper detects the mismatch and re-creates the Response using
+ * `globalThis.Response` so the SDK's instanceof check succeeds.
+ */
+function createResponseNormalizingFetch(baseFetch: typeof fetch): typeof fetch {
+  return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const response: unknown = await baseFetch(input, init);
+    if (
+      response !== null &&
+      typeof response === 'object' &&
+      'status' in response &&
+      'headers' in response &&
+      !(response instanceof Response)
+    ) {
+      // Cross-realm Response detected — re-wrap with globalThis.Response
+      const r = response as { body?: ReadableStream | null; status: number; statusText?: string; headers: HeadersInit };
+      return new Response(r.body ?? null, {
+        status: r.status,
+        statusText: r.statusText ?? '',
+        headers: new Headers(r.headers),
+      });
+    }
+    return response as Response;
+  }) as typeof fetch;
+}
+
 // HTTP transport can handle more concurrent requests than STDIO, but we still
 // limit concurrency to prevent overwhelming upstream servers and to provide
 // fair scheduling when multiple agents share the same MCP connection
@@ -301,6 +335,15 @@ export class HttpMcpClient implements McpClient {
         headers: this.config.extra_headers
       };
     }
+
+    // Workaround for MCP SDK's parseErrorResponse() using `instanceof Response`
+    // which fails when the fetch implementation returns a Response from a different
+    // realm (e.g., bundled Node.js in Electron, undici vs native). When instanceof
+    // fails, the SDK passes the raw object to JSON.parse() producing:
+    //   "[object Response]" is not valid JSON
+    // This wrapper re-creates the Response using globalThis.Response when a mismatch
+    // is detected, ensuring the SDK can properly read the response body.
+    options.fetch = createResponseNormalizingFetch(fetch);
 
     return options;
   }
