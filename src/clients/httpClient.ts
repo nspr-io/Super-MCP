@@ -25,6 +25,11 @@ export interface HttpMcpClientOptions {
   oauthProvider?: SimpleOAuthProvider;
 }
 
+// Default timeout for connect() to prevent hanging on unresponsive OAuth
+// discovery endpoints or slow MCP servers. Covers the full transport
+// negotiation + OAuth token refresh cycle.
+const CONNECT_TIMEOUT_MS = 30_000;
+
 export class HttpMcpClient implements McpClient {
   private client: Client;
   private transport?: SSEClientTransport | StreamableHTTPClientTransport;
@@ -136,7 +141,7 @@ export class HttpMcpClient implements McpClient {
     this.transport = this.createTransport();
 
     try {
-      await this.client.connect(this.transport);
+      await this.connectWithTimeout(this.client, this.transport);
       this.isConnected = true;
 
       logger.info("Successfully connected to MCP server", {
@@ -183,7 +188,7 @@ export class HttpMcpClient implements McpClient {
           
           // Create SSE transport and connect
           this.transport = this.createTransport();
-          await this.client.connect(this.transport);
+          await this.connectWithTimeout(this.client, this.transport);
           this.isConnected = true;
           
           logger.info("Successfully connected to MCP server using SSE fallback", {
@@ -242,6 +247,27 @@ export class HttpMcpClient implements McpClient {
         error: errorMessage,
       });
       throw error;
+    }
+  }
+
+  private async connectWithTimeout(
+    client: Client,
+    transport: SSEClientTransport | StreamableHTTPClientTransport
+  ): Promise<void> {
+    const timeoutMs = Number(process.env.SUPER_MCP_CONNECT_TIMEOUT_MS) || CONNECT_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Connection timed out after ${timeoutMs}ms for package '${this.packageId}'`)),
+        timeoutMs
+      );
+    });
+    const connectPromise = client.connect(transport);
+    try {
+      await Promise.race([connectPromise, timeout]);
+    } finally {
+      clearTimeout(timer!);
+      connectPromise.catch(() => {});
     }
   }
 
@@ -488,7 +514,7 @@ export class HttpMcpClient implements McpClient {
         
         this.transport = this.createTransport();
         
-        await this.client.connect(this.transport);
+        await this.connectWithTimeout(this.client, this.transport);
         this.isConnected = true;
         logger.info("Client connected successfully with OAuth tokens", { package_id: this.packageId });
       } catch (error) {
