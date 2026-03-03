@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error" | "fatal";
@@ -29,7 +30,7 @@ class Logger {
     this.level = level;
     
     // Create logs directory
-    const logsDir = path.join(process.env.HOME || "", ".super-mcp", "logs");
+    const logsDir = path.join(os.homedir(), ".super-mcp", "logs");
     fs.mkdirSync(logsDir, { recursive: true, mode: 0o700 });
     
     // Create log file with timestamp
