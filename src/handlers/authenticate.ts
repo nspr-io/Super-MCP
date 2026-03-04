@@ -6,7 +6,6 @@ import { SimpleOAuthProvider } from "../auth/providers/simple.js";
 import { formatError } from "../utils/formatError.js";
 
 const logger = getLogger();
-const AUTH_PRECHECK_TIMEOUT_MS = 10_000;
 
 export async function handleAuthenticate(
   input: { package_id: string; wait_for_completion?: boolean },
@@ -54,83 +53,52 @@ export async function handleAuthenticate(
     };
   }
   
-  let precheckTimedOut = false;
-  let precheckTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  const precheckPromise = (async (): Promise<any | null> => {
-    try {
-      logger.info("Checking if already authenticated", { package_id });
-      const client = await registry.getClient(package_id);
-      const health = client.healthCheck ? await client.healthCheck() : "ok";
-      logger.info("Client health check", { package_id, health });
-      
-      if (health === "ok") {
-        try {
-          logger.info("Testing tool access", { package_id });
-          // Timeout to prevent hanging on slow/unresponsive MCP servers
-          // Windows needs longer timeout due to antivirus/firewall checks on cold-start
-          const isWindows = process.platform === 'win32';
-          const defaultTimeoutMs = isWindows ? 30000 : 10000;
-          const timeoutMs = Number(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS) || defaultTimeoutMs;
-          const toolsPromise = client.listTools();
-          const timeoutPromise = new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error(`listTools timed out after ${timeoutMs}ms`)), timeoutMs)
-          );
-          const tools = await Promise.race([toolsPromise, timeoutPromise]);
-          logger.info("Tools accessible", { package_id, tool_count: tools.length });
-          catalog.clearPackage(package_id);
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify({
-                  package_id,
-                  status: "already_authenticated",
-                  message: "Package is already authenticated and connected",
-                }, null, 2),
-              },
-            ],
-            isError: false,
-          };
-        } catch (error) {
-          logger.info("Tool access failed, need to authenticate", { 
-            package_id,
-            error: formatError(error),
-          });
-        }
+  try {
+    logger.info("Checking if already authenticated", { package_id });
+    const client = await registry.getClient(package_id);
+    const health = client.healthCheck ? await client.healthCheck() : "ok";
+    logger.info("Client health check", { package_id, health });
+    
+    if (health === "ok") {
+      try {
+        logger.info("Testing tool access", { package_id });
+        // Timeout to prevent hanging on slow/unresponsive MCP servers
+        // Windows needs longer timeout due to antivirus/firewall checks on cold-start
+        const isWindows = process.platform === 'win32';
+        const defaultTimeoutMs = isWindows ? 30000 : 10000;
+        const timeoutMs = Number(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS) || defaultTimeoutMs;
+        const toolsPromise = client.listTools();
+        const timeoutPromise = new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error(`listTools timed out after ${timeoutMs}ms`)), timeoutMs)
+        );
+        const tools = await Promise.race([toolsPromise, timeoutPromise]);
+        logger.info("Tools accessible", { package_id, tool_count: tools.length });
+        catalog.clearPackage(package_id);
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                package_id,
+                status: "already_authenticated",
+                message: "Package is already authenticated and connected",
+              }, null, 2),
+            },
+          ],
+          isError: false,
+        };
+      } catch (error) {
+        logger.info("Tool access failed, need to authenticate", { 
+          package_id,
+          error: formatError(error),
+        });
       }
-    } catch (error) {
-      logger.info("Client not available or errored", { 
-        package_id,
-        error: formatError(error),
-      });
     }
-
-    return null;
-  })();
-
-  const precheckResult = await Promise.race([
-    precheckPromise,
-    new Promise<null>((resolve) => {
-      precheckTimeoutHandle = setTimeout(() => {
-        precheckTimedOut = true;
-        resolve(null);
-      }, AUTH_PRECHECK_TIMEOUT_MS);
-    }),
-  ]);
-
-  if (precheckTimeoutHandle) {
-    clearTimeout(precheckTimeoutHandle);
-  }
-
-  if (precheckTimedOut) {
-    logger.info("Authentication pre-check timed out; continuing with OAuth flow", {
+  } catch (error) {
+    logger.info("Client not available or errored", { 
       package_id,
-      timeout_ms: AUTH_PRECHECK_TIMEOUT_MS,
+      error: formatError(error),
     });
-  }
-
-  if (precheckResult) {
-    return precheckResult;
   }
   
   try {
@@ -249,49 +217,34 @@ export async function handleAuthenticate(
     
     logger.info("Triggering OAuth connection", { package_id });
     
-    let connectError: unknown;
-    const connectPromise = httpClient.connectWithOAuth().catch((err) => {
-      connectError = err;
-      const errMsg = formatError(err);
-      const isNonFatalConnectError = typeof errMsg === "string" && (
-        errMsg.includes("redirect initiated") ||
-        errMsg.includes("Unauthorized") ||
-        errMsg.includes("401")
-      );
-
-      if (typeof errMsg === "string" && errMsg.includes("does not support dynamic client registration")) {
-        logger.error("OAuth failed: server does not support dynamic client registration. Configure static oauthClientId/oauthClientSecret.", {
-          package_id,
-          error: errMsg,
-        });
-        throw err;
-      }
-
-      if (isNonFatalConnectError) {
-        logger.debug("OAuth redirect initiated (expected)", {
-          package_id,
-          error: errMsg,
-        });
-        return;
-      }
-
-      logger.error("OAuth connect failed before callback", {
-        package_id,
-        error: errMsg,
-      });
-      throw err;
-    });
+    const connectPromise = httpClient.connectWithOAuth();
     
     if (wait_for_completion && callbackServer) {
       logger.info("Waiting for OAuth callback", { package_id });
       
       try {
+        connectPromise.catch(err => {
+          const errMsg = formatError(err);
+          // DCR failures are NOT expected -- they mean the server doesn't support dynamic registration
+          // and the auth flow will never complete. Log as error so it's visible in diagnostics.
+          if (typeof errMsg === 'string' && errMsg.includes("does not support dynamic client registration")) {
+            logger.error("OAuth failed: server does not support dynamic client registration. Configure static oauthClientId/oauthClientSecret.", {
+              package_id,
+              error: errMsg,
+            });
+          } else {
+            logger.debug("OAuth redirect initiated (expected)", {
+              package_id,
+              error: errMsg,
+            });
+          }
+        });
+        
         // Wait for callback with state validation for CSRF protection
         // 5 minutes timeout - OAuth flows can take time (login, 2FA, permissions review, workspace selection)
         const callbackPromise = callbackServer.waitForCallback(300000, oauthState);
-        const fatalConnectErrorPromise = connectPromise.then(() => new Promise<never>(() => {}));
-
-        const authCode = await Promise.race([callbackPromise, fatalConnectErrorPromise]);
+        
+        const authCode = await callbackPromise;
         logger.info("OAuth callback received", { package_id, has_code: !!authCode });
         
         logger.info("Exchanging authorization code for tokens", { package_id });
@@ -365,27 +318,10 @@ export async function handleAuthenticate(
           };
         }
       } catch (error) {
-        const reportedError = connectError ?? error;
-        const errorMsg = formatError(reportedError);
         logger.error("OAuth failed", {
           package_id,
-          error: errorMsg,
+          error: formatError(error),
         });
-
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                package_id,
-                status: "error",
-                message: `Authentication failed: ${errorMsg}`,
-                error: errorMsg,
-              }, null, 2),
-            },
-          ],
-          isError: true,
-        };
       } finally {
         if (callbackServer) {
           try {
