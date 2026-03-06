@@ -150,19 +150,37 @@ function generateSuccessHtml(serviceId?: string): string {
       var count = ${countdownSeconds};
       var el = document.getElementById('countdown');
       var btn = document.getElementById('openBtn');
-      
+      var countdownContainer = document.querySelector('.countdown-container');
+      var fallback = document.querySelector('.fallback');
+      var opened = false;
+      var timerId = null;
+
+      function openApp() {
+        if (opened) return;
+        opened = true;
+        if (timerId) clearTimeout(timerId);
+        if (countdownContainer) countdownContainer.style.display = 'none';
+        if (fallback) fallback.style.display = 'none';
+        window.location.href = '${deepLinkUrl}';
+      }
+
       function tick() {
+        if (opened) return;
         count--;
         el.textContent = count;
         if (count <= 0) {
-          // Try to open via the link - user may need to click manually due to browser security
-          window.location.href = '${deepLinkUrl}';
+          openApp();
         } else {
-          setTimeout(tick, 1000);
+          timerId = setTimeout(tick, 1000);
         }
       }
-      
-      setTimeout(tick, 1000);
+
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        openApp();
+      });
+
+      timerId = setTimeout(tick, 1000);
     })();
   </script>
 </body>
