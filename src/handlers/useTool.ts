@@ -23,6 +23,7 @@ interface RepairTicket {
   unknown_fields: string[];
   did_you_mean: Record<string, string>;
   schema_fragments: Record<string, unknown>;
+  valid_fields: string[];
   attempt: number;
 }
 
@@ -176,6 +177,10 @@ function summarizeRepairTicket(
       })
       .join(", ");
     sections.push(`Unknown fields: ${details}.`);
+
+    if (ticket.valid_fields.length > 0) {
+      sections.push(`Valid arguments: ${ticket.valid_fields.join(", ")}.`);
+    }
   }
 
   let message = `Argument validation failed for tool '${toolId}' in package '${packageId}'.`;
@@ -278,6 +283,7 @@ function buildRepairTicket(
     unknown_fields: strippedArgs,
     did_you_mean: didYouMean,
     schema_fragments: buildSchemaFragments(schema, failingFields, includeFullSchema),
+    valid_fields: validFields,
     attempt,
   };
 }
@@ -397,7 +403,7 @@ export async function handleUseTool(
   const validationResult = validator.validate(schema, args, { package_id, tool_id });
   const strippedArgs = validationResult.strippedArgs;
 
-  if (!validationResult.valid) {
+  if (!validationResult.valid || strippedArgs.length > 0) {
     const attempt = incrementValidationAttempt(validationAttemptKey);
     const repairTicket = buildRepairTicket(schema, validationResult.errors, strippedArgs, attempt);
     const shouldStopRetrying = attempt >= 3;
@@ -427,12 +433,6 @@ export async function handleUseTool(
     };
 
     let dryRunJson = JSON.stringify(result, null, 2);
-    if (strippedArgs.length > 0) {
-      const validArgs = schema?.properties ? Object.keys(schema.properties) : [];
-      let note = `\n\nNote: Removed unknown arguments: ${strippedArgs.join(', ')}.`;
-      if (validArgs.length > 0) note += ` Valid arguments for this tool: ${validArgs.join(', ')}`;
-      dryRunJson += note;
-    }
 
     return {
       content: [
@@ -497,13 +497,6 @@ export async function handleUseTool(
     } else {
       result.telemetry.output_chars = originalOutputChars;
       outputJson = JSON.stringify(result, null, 2);
-    }
-
-    if (strippedArgs.length > 0) {
-      const validArgs = schema?.properties ? Object.keys(schema.properties) : [];
-      let note = `\n\nNote: Removed unknown arguments: ${strippedArgs.join(', ')}.`;
-      if (validArgs.length > 0) note += ` Valid arguments for this tool: ${validArgs.join(', ')}`;
-      outputJson += note;
     }
 
     return {

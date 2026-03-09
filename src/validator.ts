@@ -27,6 +27,7 @@ export interface ValidationResult {
 
 export class Validator {
   private ajv: Ajv;
+  private injectedSchemaCache = new WeakMap<object, object>();
 
   constructor() {
     this.ajv = new Ajv({
@@ -54,17 +55,36 @@ export class Validator {
       throw new ValidationError("Schema is required", []);
     }
 
-    // Strip unknown top-level properties when schema forbids them.
-    // Claude models sometimes hallucinate extra args (e.g. "limit") that cause
-    // validation failures and retry loops. We strip and log rather than reject.
+    // Inject additionalProperties: false for schemas that omit it.
+    // Uses WeakMap cache to preserve Ajv's internal compiled-schema cache.
+    let effectiveSchema = schema;
+    if (
+      schema.properties &&
+      !("additionalProperties" in schema) &&
+      !schema.oneOf &&
+      !schema.allOf &&
+      !schema.anyOf &&
+      !schema.patternProperties
+    ) {
+      const cached = this.injectedSchemaCache.get(schema);
+      if (cached) {
+        effectiveSchema = cached;
+      } else {
+        effectiveSchema = { ...schema, additionalProperties: false };
+        this.injectedSchemaCache.set(schema, effectiveSchema);
+      }
+    }
+
+    // Strip unknown top-level properties so Ajv validates only known fields.
+    // The caller (useTool handler) rejects when strippedArgs.length > 0.
     const strippedArgs: string[] = [];
     if (
-      schema.additionalProperties === false &&
-      schema.properties &&
+      effectiveSchema.additionalProperties === false &&
+      effectiveSchema.properties &&
       typeof data === 'object' &&
       data !== null
     ) {
-      const allowed = new Set(Object.keys(schema.properties));
+      const allowed = new Set(Object.keys(effectiveSchema.properties));
       for (const key of Object.keys(data)) {
         if (!allowed.has(key)) {
           strippedArgs.push(key);
@@ -72,7 +92,7 @@ export class Validator {
         }
       }
       if (strippedArgs.length > 0) {
-        logger.warn("Stripped unknown properties from tool args", {
+        logger.warn("Detected unknown properties in tool args", {
           package_id: context?.package_id,
           tool_id: context?.tool_id,
           stripped: strippedArgs,
@@ -83,7 +103,7 @@ export class Validator {
     // Compile schema with better error handling for format issues
     let validate;
     try {
-      validate = this.ajv.compile(schema);
+      validate = this.ajv.compile(effectiveSchema);
     } catch (error) {
       logger.warn("Schema compilation warning", {
         package_id: context?.package_id,

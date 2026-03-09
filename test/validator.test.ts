@@ -152,13 +152,14 @@ describe("Validator", () => {
       expect(result.strippedArgs).toEqual([]);
     });
 
-    it("does not strip when additionalProperties is not false", () => {
+    it("does not strip when additionalProperties is true", () => {
       const validator = new Validator();
       const schema = {
         type: "object",
         properties: {
           query: { type: "string" },
         },
+        additionalProperties: true,
       };
       const data = { query: "test", extra: "value" };
       const result = validator.validate(schema, data);
@@ -388,5 +389,232 @@ describe("use_tool repair tickets", () => {
     const error = await runValidationFailure({ schema, args });
     const repairTicket = expectRepairTicket(error);
     expect(Object.keys(repairTicket.schema_fragments).length).toBeLessThanOrEqual(5);
+  });
+});
+
+describe("FOX-2753: enforce additionalProperties", () => {
+  it("rejects strip-only unknown args when additionalProperties is false", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({
+      schema,
+      args: { query: "test", unknown: "value" },
+    });
+
+    const repairTicket = expectRepairTicket(error);
+    expect(repairTicket.unknown_fields).toContain("unknown");
+    expect(repairTicket.missing_required).toEqual([]);
+  });
+
+  it("injects additionalProperties=false when omitted and rejects unknown args", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      required: ["query"],
+    };
+
+    const error = await runValidationFailure({
+      schema,
+      args: { query: "test", unknown: "value" },
+    });
+
+    const repairTicket = expectRepairTicket(error);
+    expect(repairTicket.unknown_fields).toContain("unknown");
+    expect(repairTicket.missing_required).toEqual([]);
+  });
+
+  it("skips injection when top-level schema uses oneOf", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      oneOf: [{ required: ["query"] }],
+    };
+
+    const { registry, catalog, validator } = createUseToolDeps(schema);
+    const result = await handleUseTool(
+      {
+        package_id: nextId("pkg"),
+        tool_id: nextId("tool"),
+        args: { query: "test", unknown: "value" },
+        dry_run: true,
+      },
+      registry as any,
+      catalog as any,
+      validator,
+    );
+
+    const dryRunPayload = JSON.parse(result.content[0].text);
+    expect(dryRunPayload.args_used).toHaveProperty("unknown", "value");
+  });
+
+  it("includes valid params in error summary when unknown fields are present", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({
+      schema,
+      args: { query: "test", qurey: "value" },
+    });
+
+    expect(error.message).toContain("Unknown fields:");
+    expect(error.message).toContain("Valid arguments: query");
+  });
+
+  it("lists valid params even when unknown field has no fuzzy match", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        to: { type: "array", items: { type: "string" } },
+        subject: { type: "string" },
+        body: { type: "string" },
+      },
+      required: ["to", "subject", "body"],
+      additionalProperties: false,
+    };
+    const error = await runValidationFailure({
+      schema,
+      args: { to: ["a@b.com"], subject: "hi", body: "hello", zzz_totally_fake: true },
+    });
+    expect(error.message).toContain("Unknown fields: zzz_totally_fake");
+    expect(error.message).toContain("Valid arguments: to, subject, body");
+    const ticket = error.data.repair_ticket;
+    expect(ticket.valid_fields).toEqual(["to", "subject", "body"]);
+    expect(ticket.unknown_fields).toEqual(["zzz_totally_fake"]);
+    expect(ticket.missing_required).toEqual([]);
+  });
+});
+
+describe("FOX-2753: ticket scenario verification", () => {
+  // S2: send_workspace_email with fabricated priority — schema omits additionalProperties
+  it("S2: rejects send_email with hallucinated priority field", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        to: { type: "array", items: { type: "string" } },
+        subject: { type: "string" },
+        body: { type: "string" },
+        cc: { type: "array", items: { type: "string" } },
+        bcc: { type: "array", items: { type: "string" } },
+        replyTo: { type: "string" },
+        inReplyTo: { type: "string" },
+      },
+      required: ["to", "subject", "body"],
+    };
+    const error = await runValidationFailure({
+      schema,
+      args: { to: ["harry@mindstone.com"], subject: "test", body: "test", priority: "high" },
+    });
+    const ticket = error.data.repair_ticket;
+    expect(ticket.unknown_fields).toContain("priority");
+    expect(ticket.missing_required).toEqual([]);
+    expect(error.message).toContain("priority");
+    expect(error.message).toContain("Valid arguments:");
+  });
+
+  // S4b: search_workspace_emails with fabricated q param — rejected as unknown
+  // Note: "q" is too short/distant from "query" for Levenshtein to suggest it
+  it("S4b: rejects search_emails with hallucinated q param", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        maxResults: { type: "number" },
+        labelIds: { type: "array", items: { type: "string" } },
+      },
+      required: ["query"],
+    };
+    const error = await runValidationFailure({
+      schema,
+      args: { q: "invoices" },
+    });
+    const ticket = error.data.repair_ticket;
+    expect(ticket.unknown_fields).toContain("q");
+    expect(ticket.missing_required).toContain("query");
+  });
+
+  // S4c: search_workspace_emails with complete nonsense param
+  it("S4c: rejects search_emails with zzz_totally_fake_param", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        maxResults: { type: "number" },
+      },
+      required: ["query"],
+    };
+    const error = await runValidationFailure({
+      schema,
+      args: { zzz_totally_fake_param: "invoices" },
+    });
+    const ticket = error.data.repair_ticket;
+    expect(ticket.unknown_fields).toContain("zzz_totally_fake_param");
+    expect(ticket.did_you_mean["zzz_totally_fake_param"]).toBeUndefined();
+    expect(ticket.missing_required).toContain("query");
+  });
+
+  // S5: create_event with reminder instead of reminders — should suggest reminders
+  it("S5: rejects create_event with reminder, suggests reminders", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        summary: { type: "string" },
+        start: { type: "string" },
+        end: { type: "string" },
+        reminders: { type: "array", items: { type: "object" } },
+        attendees: { type: "array", items: { type: "string" } },
+      },
+      required: ["summary", "start", "end"],
+    };
+    const error = await runValidationFailure({
+      schema,
+      args: { summary: "Meeting", start: "2026-03-10T10:00:00Z", end: "2026-03-10T11:00:00Z", reminder: 15 },
+    });
+    const ticket = error.data.repair_ticket;
+    expect(ticket.unknown_fields).toContain("reminder");
+    expect(ticket.did_you_mean["reminder"]).toBe("reminders");
+    expect(ticket.missing_required).toEqual([]);
+  });
+
+  // S1: valid tool call should pass — meetingType is a valid field
+  it("S1: accepts list_meetings with valid meetingType field", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        meetingType: { type: "string", enum: ["internal", "external"] },
+        limit: { type: "number" },
+      },
+    };
+    const { registry, catalog, validator } = createUseToolDeps(schema);
+    const result = await handleUseTool(
+      {
+        package_id: nextId("pkg"),
+        tool_id: nextId("tool"),
+        args: { meetingType: "external", limit: 3 },
+        dry_run: true,
+      },
+      registry as any,
+      catalog as any,
+      validator,
+    );
+    expect(result.isError).toBe(false);
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.args_used).toEqual({ meetingType: "external", limit: 3 });
   });
 });
