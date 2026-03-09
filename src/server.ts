@@ -111,7 +111,7 @@ Optional: Use name_pattern to filter tools by glob pattern (matched against full
 
 Pattern is case-insensitive and matches the full tool name. Use * for any characters, ? for single character.
 
-Returns tool names, summaries, and argument skeletons. Use include_schemas=true for full JSON schemas.`,
+Returns tool names, summaries, argument skeletons, and full JSON schemas by default. Set include_schemas=false for lighter responses.`,
             inputSchema: {
               type: "object",
               properties: {
@@ -131,8 +131,8 @@ Returns tool names, summaries, and argument skeletons. Use include_schemas=true 
                 },
                 include_schemas: {
                   type: "boolean",
-                  description: "Include full JSON schemas for tool arguments (verbose, usually not needed)",
-                  default: false,
+                  description: "Include full JSON schemas for tool arguments (enabled by default; set false for lighter responses)",
+                  default: true,
                 },
                 page_size: {
                   type: "number",

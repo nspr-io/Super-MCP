@@ -1,19 +1,292 @@
 import { UseToolInput, UseToolOutput, ERROR_CODES } from "../types.js";
 import { PackageRegistry } from "../registry.js";
 import { Catalog } from "../catalog.js";
-import { ValidationError } from "../validator.js";
+import type { ValidationResult } from "../validator.js";
 import { McpError, ErrorCode as SdkErrorCode } from "@modelcontextprotocol/sdk/types.js";
 import { getLogger } from "../logging.js";
 import { getSecurityPolicy } from "../security.js";
+import { findBestMatch } from "../utils/fuzzyMatch.js";
 
 const logger = getLogger();
 const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
+const MAX_SCHEMA_FRAGMENTS = 5;
+const FULL_SCHEMA_FRAGMENT_KEY = "__full_schema";
+const STOP_RETRYING_MESSAGE = "Arguments may require user clarification. Please ask the user for specifics.";
+const MAX_ATTEMPT_MAP_SIZE = 500;
+const validationAttemptMap = new Map<string, number>();
+
+interface RepairTicket {
+  missing_required: string[];
+  type_errors: Array<{ field: string; expected: string; got: string; value?: unknown }>;
+  enum_violations: Array<{ field: string; allowed: unknown[]; got: unknown }>;
+  format_errors: Array<{ field: string; expected: string; got: unknown }>;
+  unknown_fields: string[];
+  did_you_mean: Record<string, string>;
+  schema_fragments: Record<string, unknown>;
+  attempt: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getValidationAttemptKey(packageId: string, toolId: string): string {
+  return `${packageId}::${toolId}`;
+}
+
+function incrementValidationAttempt(key: string): number {
+  if (validationAttemptMap.size >= MAX_ATTEMPT_MAP_SIZE) {
+    validationAttemptMap.clear();
+  }
+  const attempt = (validationAttemptMap.get(key) ?? 0) + 1;
+  validationAttemptMap.set(key, attempt);
+  return attempt;
+}
+
+function resetValidationAttempt(key: string): void {
+  validationAttemptMap.delete(key);
+}
+
+function decodeJsonPointerSegment(segment: string): string {
+  return segment.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+function parseInstancePath(instancePath: string | undefined): string[] {
+  if (!instancePath) {
+    return [];
+  }
+
+  return instancePath
+    .split("/")
+    .filter(Boolean)
+    .map(decodeJsonPointerSegment);
+}
+
+function formatFieldPath(segments: string[]): string {
+  return segments.length > 0 ? segments.join(".") : "root";
+}
+
+function getFieldFromValidationError(validationError: any): string {
+  return formatFieldPath(parseInstancePath(validationError.instancePath));
+}
+
+function getRequiredFieldFromValidationError(validationError: any): string {
+  const segments = parseInstancePath(validationError.instancePath);
+  const missingProperty = validationError?.params?.missingProperty;
+  if (typeof missingProperty === "string" && missingProperty.length > 0) {
+    segments.push(missingProperty);
+  }
+  return formatFieldPath(segments);
+}
+
+function getTopLevelField(fieldPath: string): string | null {
+  if (!fieldPath || fieldPath === "root") {
+    return null;
+  }
+  return fieldPath.split(".")[0] || null;
+}
+
+function getValueType(value: unknown): string {
+  if (value === null) {
+    return "null";
+  }
+  if (Array.isArray(value)) {
+    return "array";
+  }
+  return typeof value;
+}
+
+function buildSchemaFragments(
+  schema: unknown,
+  failingFields: Set<string>,
+  includeFullSchema: boolean,
+): Record<string, unknown> {
+  if (!isRecord(schema)) {
+    return {};
+  }
+
+  if (includeFullSchema) {
+    return {
+      [FULL_SCHEMA_FRAGMENT_KEY]: schema,
+    };
+  }
+
+  const schemaProperties = isRecord(schema.properties)
+    ? (schema.properties as Record<string, unknown>)
+    : {};
+  const fragments: Record<string, unknown> = {};
+
+  for (const field of failingFields) {
+    if (Object.keys(fragments).length >= MAX_SCHEMA_FRAGMENTS) {
+      break;
+    }
+
+    const topLevelField = getTopLevelField(field);
+    if (!topLevelField || fragments[topLevelField] !== undefined) {
+      continue;
+    }
+
+    const fragment = schemaProperties[topLevelField];
+    if (fragment !== undefined) {
+      fragments[topLevelField] = fragment;
+    }
+  }
+
+  return fragments;
+}
+
+function summarizeRepairTicket(
+  packageId: string,
+  toolId: string,
+  ticket: RepairTicket,
+  includeStopRetryingGuidance: boolean,
+): string {
+  const sections: string[] = [];
+
+  if (ticket.missing_required.length > 0) {
+    sections.push(`Missing required: ${ticket.missing_required.join(", ")}.`);
+  }
+
+  if (ticket.type_errors.length > 0) {
+    const details = ticket.type_errors
+      .map((entry) => `${entry.field} (expected ${entry.expected}, got ${entry.got})`)
+      .join("; ");
+    sections.push(`Type errors: ${details}.`);
+  }
+
+  if (ticket.enum_violations.length > 0) {
+    const details = ticket.enum_violations
+      .map((entry) => `${entry.field} (allowed ${entry.allowed.map(String).join(", ")}, got ${String(entry.got)})`)
+      .join("; ");
+    sections.push(`Enum violations: ${details}.`);
+  }
+
+  if (ticket.format_errors.length > 0) {
+    const details = ticket.format_errors
+      .map((entry) => `${entry.field} (expected ${entry.expected}, got ${String(entry.got)})`)
+      .join("; ");
+    sections.push(`Format errors: ${details}.`);
+  }
+
+  if (ticket.unknown_fields.length > 0) {
+    const details = ticket.unknown_fields
+      .map((field) => {
+        const suggestion = ticket.did_you_mean[field];
+        return suggestion ? `${field} (did you mean: ${suggestion}?)` : field;
+      })
+      .join(", ");
+    sections.push(`Unknown fields: ${details}.`);
+  }
+
+  let message = `Argument validation failed for tool '${toolId}' in package '${packageId}'.`;
+  if (sections.length > 0) {
+    message += ` ${sections.join(" ")}`;
+  }
+  if (includeStopRetryingGuidance) {
+    message += ` ${STOP_RETRYING_MESSAGE}`;
+  }
+  return message;
+}
+
+function buildRepairTicket(
+  schema: unknown,
+  validationErrors: any[],
+  strippedArgs: string[],
+  attempt: number,
+): RepairTicket {
+  const missingRequired: string[] = [];
+  const typeErrors: Array<{ field: string; expected: string; got: string; value?: unknown }> = [];
+  const enumViolations: Array<{ field: string; allowed: unknown[]; got: unknown }> = [];
+  const formatErrors: Array<{ field: string; expected: string; got: unknown }> = [];
+  const failingFields = new Set<string>();
+  const validFields = isRecord(schema) && isRecord(schema.properties)
+    ? Object.keys(schema.properties)
+    : [];
+  const didYouMean: Record<string, string> = {};
+
+  for (const validationError of validationErrors) {
+    if (!validationError || typeof validationError !== "object") {
+      continue;
+    }
+
+    if (validationError.keyword === "required") {
+      const field = getRequiredFieldFromValidationError(validationError);
+      missingRequired.push(field);
+      failingFields.add(field);
+      continue;
+    }
+
+    if (validationError.keyword === "type") {
+      const field = getFieldFromValidationError(validationError);
+      const expected = Array.isArray(validationError.params?.type)
+        ? validationError.params.type.join("|")
+        : String(validationError.params?.type ?? "unknown");
+      const got = getValueType(validationError.data);
+      const typeError: { field: string; expected: string; got: string; value?: unknown } = {
+        field,
+        expected,
+        got,
+      };
+      if (validationError.data !== undefined) {
+        typeError.value = validationError.data;
+      }
+      typeErrors.push(typeError);
+      failingFields.add(field);
+      continue;
+    }
+
+    if (validationError.keyword === "enum") {
+      const field = getFieldFromValidationError(validationError);
+      const allowed = Array.isArray(validationError.params?.allowedValues)
+        ? validationError.params.allowedValues
+        : [];
+      enumViolations.push({
+        field,
+        allowed,
+        got: validationError.data,
+      });
+      failingFields.add(field);
+      continue;
+    }
+
+    if (validationError.keyword === "format") {
+      const field = getFieldFromValidationError(validationError);
+      formatErrors.push({
+        field,
+        expected: String(validationError.params?.format ?? "unknown"),
+        got: validationError.data,
+      });
+      failingFields.add(field);
+    }
+  }
+
+  for (const unknownField of strippedArgs) {
+    const suggestion = findBestMatch(unknownField, validFields);
+    if (suggestion) {
+      didYouMean[unknownField] = suggestion;
+      failingFields.add(suggestion);
+    }
+  }
+
+  const includeFullSchema = attempt >= 2;
+
+  return {
+    missing_required: missingRequired,
+    type_errors: typeErrors,
+    enum_violations: enumViolations,
+    format_errors: formatErrors,
+    unknown_fields: strippedArgs,
+    did_you_mean: didYouMean,
+    schema_fragments: buildSchemaFragments(schema, failingFields, includeFullSchema),
+    attempt,
+  };
+}
 
 export async function handleUseTool(
   input: UseToolInput & { _rebel_staged?: boolean; _rebel_staged_message?: string },
   registry: PackageRegistry,
   catalog: Catalog,
-  validator: any
+  validator: { validate: (schema: any, data: any, context?: { package_id?: string; tool_id?: string }) => ValidationResult }
 ): Promise<any> {
   // Staged tool calls: the host process (toolSafetyService PreToolUse hook) intercepted
   // this call for deferred user approval. It sets _rebel_staged via updatedInput so the
@@ -120,55 +393,29 @@ export async function handleUseTool(
   }
 
   // Validate arguments unconditionally (before checking dry_run)
-  let strippedArgs: string[] = [];
-  try {
-    strippedArgs = validator.validate(schema, args, { package_id, tool_id });
-  } catch (error) {
-    if (error instanceof ValidationError) {
-      let helpMessage = `Argument validation failed for tool '${tool_id}' in package '${package_id}'.\n`;
-      helpMessage += `\n${error.message}\n`;
-      
-      if (error.errors && error.errors.length > 0) {
-        helpMessage += `\nValidation errors:`;
-        error.errors.forEach((err: any) => {
-          const path = err.instancePath || "root";
-          helpMessage += `\n  • ${path}: ${err.message}`;
-          
-          if (err.keyword === "required") {
-            helpMessage += ` (missing: ${err.params?.missingProperty})`;
-          } else if (err.keyword === "additionalProperties" && err.params?.additionalProperty) {
-            helpMessage += ` (remove: "${err.params.additionalProperty}")`;
-          } else if (err.keyword === "type") {
-            helpMessage += ` (expected: ${err.params?.type}, got: ${typeof err.data})`;
-          } else if (err.keyword === "enum") {
-            helpMessage += ` (allowed values: ${err.params?.allowedValues?.join(", ")})`;
-          }
-        });
-      }
+  const validationAttemptKey = getValidationAttemptKey(package_id, tool_id);
+  const validationResult = validator.validate(schema, args, { package_id, tool_id });
+  const strippedArgs = validationResult.strippedArgs;
 
-      const validArgs = schema?.properties ? Object.keys(schema.properties) : [];
-      if (validArgs.length > 0) {
-        helpMessage += `\n\nValid arguments for this tool: ${validArgs.join(', ')}`;
-      }
-      
-      helpMessage += `\n\nTo see the correct schema, run:`;
-      helpMessage += `\n  list_tools(package_id: "${package_id}", include_schemas: true)`;
-      helpMessage += `\n\nTo test your arguments without executing:`;
-      helpMessage += `\n  use_tool(package_id: "${package_id}", tool_id: "${tool_id}", args: {...}, dry_run: true)`;
-      
-      throw {
-        code: ERROR_CODES.ARG_VALIDATION_FAILED,
-        message: helpMessage,
-        data: {
-          package_id,
-          tool_id,
-          errors: error.errors,
-          provided_args: args ? Object.keys(args) : [],
-        },
-      };
-    }
-    throw error;
+  if (!validationResult.valid) {
+    const attempt = incrementValidationAttempt(validationAttemptKey);
+    const repairTicket = buildRepairTicket(schema, validationResult.errors, strippedArgs, attempt);
+    const shouldStopRetrying = attempt >= 3;
+
+    throw {
+      code: ERROR_CODES.ARG_VALIDATION_FAILED,
+      message: summarizeRepairTicket(package_id, tool_id, repairTicket, shouldStopRetrying),
+      data: {
+        package_id,
+        tool_id,
+        errors: validationResult.errors,
+        provided_args: args ? Object.keys(args) : [],
+        repair_ticket: repairTicket,
+      },
+    };
   }
+
+  resetValidationAttempt(validationAttemptKey);
 
   if (dry_run) {
     const result: UseToolOutput = {

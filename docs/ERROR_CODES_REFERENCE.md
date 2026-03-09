@@ -115,16 +115,41 @@ The arguments provided to a tool don't match its expected JSON schema.
 - Fields exceeding length limits
 
 **Solutions:**
-1. Run `list_tools(package_id: "...", include_schemas: true)` to see full schema
-2. Ensure all required fields are present
-3. Check that types match exactly (strings, numbers, booleans)
-4. Use `dry_run: true` with `use_tool` to validate before executing
+1. Inspect `data.repair_ticket` in the error response for surgical fix guidance:
+   - `missing_required`
+   - `type_errors`
+   - `enum_violations`
+   - `format_errors`
+   - `unknown_fields` + `did_you_mean`
+   - `schema_fragments` (field-level snippets; escalates to full schema on repeated failures)
+2. Fix only the fields listed in the repair ticket and retry
+3. Use `dry_run: true` with `use_tool` to validate arguments before execution
+4. If `repair_ticket.attempt >= 3`, ask the user for clarification before retrying
 
 **Related get_help:** `get_help(error_code: -32003)`
 
 **Example log message:**
 ```
-Argument validation failed for tool 'write_file': missing required property 'content'
+Argument validation failed for tool 'write_file'. Missing required: content. Type errors: overwrite (expected boolean, got string).
+```
+
+**Example error data payload:**
+```json
+{
+  "repair_ticket": {
+    "missing_required": ["content"],
+    "type_errors": [{"field": "overwrite", "expected": "boolean", "got": "string", "value": "yes"}],
+    "enum_violations": [],
+    "format_errors": [],
+    "unknown_fields": ["filePath"],
+    "did_you_mean": {"filePath": "path"},
+    "schema_fragments": {
+      "content": {"type": "string"},
+      "path": {"type": "string"}
+    },
+    "attempt": 1
+  }
+}
 ```
 
 ---

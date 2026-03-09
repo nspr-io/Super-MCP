@@ -8,13 +8,21 @@ const logger = getLogger();
 export class ValidationError extends Error {
   code: number;
   errors: any[];
+  strippedArgs: string[];
   
-  constructor(message: string, errors: any[]) {
+  constructor(message: string, errors: any[], strippedArgs: string[] = []) {
     super(message);
     this.name = "ValidationError";
     this.code = ERROR_CODES.ARG_VALIDATION_FAILED;
     this.errors = errors;
+    this.strippedArgs = strippedArgs;
   }
+}
+
+export interface ValidationResult {
+  valid: boolean;
+  errors: any[];
+  strippedArgs: string[];
 }
 
 export class Validator {
@@ -32,9 +40,9 @@ export class Validator {
   }
 
   /** Validates data against schema. Mutates `data` in place to strip unknown
-   *  top-level properties when `additionalProperties: false`. Returns names of
-   *  any stripped properties (empty array if none). */
-  validate(schema: any, data: any, context?: { package_id?: string; tool_id?: string }): string[] {
+   *  top-level properties when `additionalProperties: false`. Returns validation
+   *  status, Ajv errors, and names of stripped properties. */
+  validate(schema: any, data: any, context?: { package_id?: string; tool_id?: string }): ValidationResult {
     logger.debug("Validating arguments", {
       package_id: context?.package_id,
       tool_id: context?.tool_id,
@@ -88,9 +96,9 @@ export class Validator {
     }
     
     const valid = validate(data);
+    const errors = validate.errors || [];
 
     if (!valid) {
-      const errors = validate.errors || [];
       logger.warn("Validation failed", {
         package_id: context?.package_id,
         tool_id: context?.tool_id,
@@ -102,10 +110,11 @@ export class Validator {
         })),
       });
 
-      throw new ValidationError(
-        `Argument validation failed: ${errors.map(e => `${e.instancePath || "root"}: ${e.message}`).join(", ")}`,
-        errors
-      );
+      return {
+        valid: false,
+        errors,
+        strippedArgs,
+      };
     }
 
     logger.debug("Validation passed", {
@@ -113,7 +122,11 @@ export class Validator {
       tool_id: context?.tool_id,
     });
 
-    return strippedArgs;
+    return {
+      valid: true,
+      errors,
+      strippedArgs,
+    };
   }
 }
 

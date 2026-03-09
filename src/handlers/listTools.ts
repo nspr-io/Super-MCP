@@ -11,7 +11,7 @@ export async function handleListTools(
     package_id,
     name_pattern,
     summarize = true,
-    include_schemas = false,
+    include_schemas = true,
     page_size = 20,
     page_token,
   } = input;

@@ -135,7 +135,7 @@ Returns:
 
 ## Tips
 - Start with summarize: true for readable format
-- Use include_schemas: true only when debugging
+- Schemas are included by default; set include_schemas: false for lighter responses
 - Page through results if a package has many tools`,
 
     error_handling: `# Error Handling in Super-MCP
@@ -285,7 +285,7 @@ The tool_id doesn't exist in the specified package.
 The arguments provided don't match the tool's expected schema.
 
 ## How to Fix
-1. Run \`list_tools(package_id: "...", include_schemas: true)\`
+1. Run \`list_tools(package_id: "...")\`
 2. Review the exact schema requirements
 3. Ensure all required fields are present
 4. Check that types match exactly (string vs number)
@@ -437,7 +437,7 @@ use_tool(
 
 ## Troubleshooting
 - If tools aren't working, check \`health_check_all()\`
-- For detailed schemas: \`list_tools(package_id: "${packageId}", include_schemas: true)\`
+- Schemas are included by default: \`list_tools(package_id: "${packageId}")\`
 - Test arguments: Add \`dry_run: true\` to use_tool`;
 
   } catch (error) {
