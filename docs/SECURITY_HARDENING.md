@@ -2,7 +2,7 @@
 
 This document tracks security hardening measures implemented in Super-MCP.
 
-**See also:** [Rebel Security Overview](../../docs/project/SECURITY_OVERVIEW.md) - Parent app security architecture
+**See also:** [Rebel Safety System](../../docs/project/SAFETY_SYSTEM.md) - Parent app safety and security architecture
 
 ## Implemented (2025-12-26)
 
