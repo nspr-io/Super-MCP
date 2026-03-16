@@ -7,6 +7,33 @@ const logger = getLogger();
 const ERROR_RETRY_INTERVAL_MS = 60_000;
 type CatalogStatus = "ready" | "auth_required" | "error";
 
+/** Detect ECONNREFUSED errors, including Node.js fetch wrappers (.cause) and registry wrappers (.originalError). */
+function isConnectionRefusedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  if (msg.includes('econnrefused')) return true;
+  if ((error as any).code === 'ECONNREFUSED') return true;
+  // Node.js fetch wraps socket errors in TypeError('fetch failed') with .cause
+  const cause = (error as any).cause;
+  if (cause instanceof Error) {
+    if (cause.message.toLowerCase().includes('econnrefused')) return true;
+    if ((cause as any).code === 'ECONNREFUSED') return true;
+  }
+  // Registry wraps connection errors with .originalError containing the raw error
+  const original = (error as any).originalError;
+  if (original) return isConnectionRefusedError(original);
+  return false;
+}
+
+/** Check whether a URL points to localhost (127.0.0.1 or localhost). */
+function isLocalhostUrl(url?: string): boolean {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+  } catch { return false; }
+}
+
 interface CachedTool {
   packageId: string;
   tool: any;
@@ -282,6 +309,19 @@ export class Catalog {
       return {
         status: "auth_required",
         etag: `auth-pending-${Date.now()}`,
+      };
+    }
+
+    // Check for connection refused on localhost URLs (desktop app not running)
+    const pkg = this.registry.getPackage(packageId);
+    if (pkg && isLocalhostUrl(pkg.base_url) && isConnectionRefusedError(error)) {
+      const friendlyMessage = pkg.name
+        ? `${pkg.name} isn't running. Open ${pkg.name} on your computer and try again.`
+        : "A local app isn't running. Check that the required app is open on your computer and try again.";
+      return {
+        status: "error" as CatalogStatus,
+        etag: `error-${Date.now()}`,
+        lastError: friendlyMessage,
       };
     }
 
