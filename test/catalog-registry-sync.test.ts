@@ -234,6 +234,46 @@ describe('Catalog-Registry sync: authenticate handler', () => {
     expect(catalog.clearPackage).toHaveBeenCalledWith('test-pkg');
   });
 
+  it('skips health check and clears catalog when force=true', async () => {
+    const catalog = createMockCatalog({ 'test-pkg': 'error' });
+    const client = createMockClient({
+      healthCheck: vi.fn().mockResolvedValue('ok'),
+      listTools: vi.fn().mockResolvedValue([{ name: 'tool1' }]),
+      close: vi.fn().mockResolvedValue(undefined),
+    });
+
+    // Set up registry with a clients Map so force can delete it
+    const clientsMap = new Map<string, McpClient>();
+    clientsMap.set('test-pkg', client);
+    const registry = createMockRegistry({
+      getClient: vi.fn().mockResolvedValue(client),
+      getPackage: vi.fn().mockReturnValue({
+        id: 'test-pkg',
+        name: 'Test',
+        transport: 'http',
+        base_url: 'http://localhost:3000',
+        visibility: 'default',
+      }),
+    });
+    (registry as any).clients = clientsMap;
+
+    const result = await handleAuthenticate(
+      { package_id: 'test-pkg', wait_for_completion: false, force: true },
+      registry,
+      catalog,
+    );
+
+    const parsed = JSON.parse(result.content[0].text);
+    // force=true should NOT return already_authenticated — it skips the check entirely
+    expect(parsed.status).not.toBe('already_authenticated');
+    // The health check should NOT have been called
+    expect(client.healthCheck).not.toHaveBeenCalled();
+    // The existing client should have been closed
+    expect(client.close).toHaveBeenCalled();
+    // Catalog should have been cleared
+    expect(catalog.clearPackage).toHaveBeenCalledWith('test-pkg');
+  });
+
   it('does NOT clear catalog when getClient throws (auth failure)', async () => {
     const catalog = createMockCatalog({ 'test-pkg': 'error' });
     const registry = createMockRegistry({

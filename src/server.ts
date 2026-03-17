@@ -269,7 +269,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
           },
           {
             name: "authenticate",
-            description: "Start OAuth authentication for packages that require it (e.g., Notion, Slack). Opens browser for authorization. Use health_check_all first to see which packages need authentication.",
+            description: "Start OAuth authentication for packages that require it (e.g., Notion, Slack). Opens browser for authorization. Use health_check_all first to see which packages need authentication. If a package reports 'already_authenticated' but tools still fail with auth errors, use force: true to bypass the check and re-authenticate.",
             inputSchema: {
               type: "object",
               properties: {
@@ -282,6 +282,11 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
                   type: "boolean",
                   description: "Whether to wait for OAuth completion before returning",
                   default: true,
+                },
+                force: {
+                  type: "boolean",
+                  description: "Force re-authentication even if the package appears already authenticated. Use this when tools fail with auth errors but authenticate() returns 'already_authenticated'.",
+                  default: false,
                 },
               },
               required: ["package_id"],

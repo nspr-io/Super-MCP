@@ -8,15 +8,16 @@ import { formatError } from "../utils/formatError.js";
 const logger = getLogger();
 
 export async function handleAuthenticate(
-  input: { package_id: string; wait_for_completion?: boolean },
+  input: { package_id: string; wait_for_completion?: boolean; force?: boolean },
   registry: PackageRegistry,
   catalog: Catalog
 ): Promise<any> {
-  const { package_id, wait_for_completion = true } = input;
+  const { package_id, wait_for_completion = true, force = false } = input;
   
   logger.info("=== AUTHENTICATE START ===", { 
     package_id,
     wait_for_completion,
+    force,
     timestamp: new Date().toISOString(),
   });
   
@@ -53,6 +54,42 @@ export async function handleAuthenticate(
     };
   }
   
+  if (force) {
+    logger.info("Force re-auth requested, skipping health check", { package_id });
+    
+    // Close and remove existing client to release resources
+    const clients = (registry as any).clients as Map<string, any>;
+    const existingClient = clients.get(package_id);
+    if (existingClient) {
+      try {
+        await existingClient.close();
+      } catch (err) {
+        logger.debug("Error closing existing client during force re-auth", {
+          package_id,
+          error: formatError(err),
+        });
+      }
+      clients.delete(package_id);
+    }
+    
+    // Invalidate stored OAuth tokens so the new flow starts fresh.
+    // Port is irrelevant for credential invalidation (operates on files by package_id).
+    try {
+      const tempProvider = new SimpleOAuthProvider(package_id, 5173);
+      await tempProvider.initialize();
+      await tempProvider.invalidateCredentials('all');
+      logger.info("Invalidated stored OAuth credentials", { package_id });
+    } catch (err) {
+      logger.debug("No stored credentials to invalidate", {
+        package_id,
+        error: formatError(err),
+      });
+    }
+    
+    catalog.clearPackage(package_id);
+  }
+  
+  if (!force) {
   try {
     logger.info("Checking if already authenticated", { package_id });
     const client = await registry.getClient(package_id);
@@ -100,6 +137,7 @@ export async function handleAuthenticate(
       error: formatError(error),
     });
   }
+  } // end if (!force)
   
   try {
     let callbackServer: any = null;

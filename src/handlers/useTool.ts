@@ -553,7 +553,8 @@ export async function handleUseTool(
       diagnosticMessage += `\nTroubleshooting:`;
       diagnosticMessage += `\n  1. Check if API keys/tokens are valid`;
       diagnosticMessage += `\n  2. Run 'authenticate(package_id: "${package_id}")' if OAuth-based`;
-      diagnosticMessage += `\n  3. Verify credentials have required permissions`;
+      diagnosticMessage += `\n  3. If authenticate() says 'already_authenticated' but tools still fail, use 'authenticate(package_id: "${package_id}", force: true)' to force re-authentication`;
+      diagnosticMessage += `\n  4. Verify credentials have required permissions`;
     } else {
       diagnosticMessage += `\n❌ ${errorMessage}`;
     }

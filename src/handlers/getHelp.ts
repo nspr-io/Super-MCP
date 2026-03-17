@@ -320,10 +320,12 @@ The package requires authentication before use.
 1. Run \`authenticate(package_id: "package-name")\`
 2. Complete OAuth flow in browser
 3. Try your operation again
+4. If authenticate() says 'already_authenticated' but tools still fail, use \`authenticate(package_id: "package-name", force: true)\` to force re-authentication
 
 ## Notes
 - Some packages require API keys in config
 - OAuth tokens may expire and need refresh
+- Use \`force: true\` when tokens are stale but the system thinks auth is valid
 - Check package documentation for auth setup`,
 
     [-32007]: `# Error -32007: DOWNSTREAM_ERROR
@@ -332,12 +334,13 @@ The underlying MCP server returned an error.
 
 ## How to Fix
 1. Read the error message details carefully
-2. Check if it's an auth issue (401/403)
-3. Verify the operation is valid for that package
-4. Check package-specific documentation
+2. Check if it's an auth issue (401/403) — run \`authenticate(package_id: "...")\`
+3. If authenticate() says 'already_authenticated' but tools still fail, use \`authenticate(package_id: "...", force: true)\` to force re-authentication
+4. Verify the operation is valid for that package
+5. Check package-specific documentation
 
 ## Common Causes
-- Expired authentication tokens
+- Expired authentication tokens (use \`force: true\` to re-authenticate)
 - Rate limiting
 - Invalid operations for the package
 - Permissions issues`,
