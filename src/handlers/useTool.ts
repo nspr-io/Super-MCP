@@ -180,6 +180,8 @@ function summarizeRepairTicket(
 
     if (ticket.valid_fields.length > 0) {
       sections.push(`Valid arguments: ${ticket.valid_fields.join(", ")}.`);
+    } else {
+      sections.push(`This tool takes no arguments. Call it with an empty object: {}.`);
     }
   }
 

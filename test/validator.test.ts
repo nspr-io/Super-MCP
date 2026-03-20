@@ -618,3 +618,58 @@ describe("FOX-2753: ticket scenario verification", () => {
     expect(payload.args_used).toEqual({ meetingType: "external", limit: 3 });
   });
 });
+
+describe("FOX-2865: zero-param tool hallucination guidance", () => {
+  it("gives explicit 'takes no arguments' guidance for zero-param tools with unknown args", async () => {
+    const schema = {
+      type: "object",
+      properties: {},
+    };
+
+    const error = await runValidationFailure({
+      schema,
+      args: { email: "user@example.com" },
+    });
+
+    const repairTicket = expectRepairTicket(error);
+    expect(repairTicket.unknown_fields).toContain("email");
+    expect(repairTicket.valid_fields).toEqual([]);
+    expect(error.message).toContain("This tool takes no arguments");
+    expect(error.message).toContain("{}");
+    expect(error.message).not.toContain("Valid arguments:");
+  });
+
+  it("gives explicit guidance even with explicit additionalProperties: false", async () => {
+    const schema = {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({
+      schema,
+      args: { username: "test" },
+    });
+
+    expect(error.message).toContain("This tool takes no arguments");
+    expect(error.message).toContain("Unknown fields: username");
+  });
+
+  it("still shows 'Valid arguments' for tools that have params", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      required: ["query"],
+    };
+
+    const error = await runValidationFailure({
+      schema,
+      args: { query: "test", email: "user@example.com" },
+    });
+
+    expect(error.message).toContain("Valid arguments: query");
+    expect(error.message).not.toContain("This tool takes no arguments");
+  });
+});
