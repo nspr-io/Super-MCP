@@ -505,7 +505,7 @@
         <summary>Intelligent Summarization</summary>
         <p>The <code>summarize.ts</code> module compresses tool information:</p>
         <ul>
-            <li><strong>Description truncation</strong>: Descriptions over 100 chars are trimmed with "..."</li>
+            <li><strong>Description passthrough</strong>: Full tool descriptions are preserved for discoverability</li>
             <li><strong>Arg skeletons</strong>: Full JSON Schema → placeholder format (<code>&lt;string&gt;</code>,
                 <code>&lt;number&gt;</code>)</li>
             <li><strong>Package categorization</strong>: Tools are auto-categorized (read/write/search/create/delete) to
@@ -654,7 +654,7 @@ const nextToken = endIndex &lt; annotatedTools.length ? encode(endIndex) : null;
         <ol>
             <li><strong>Package-first abstraction</strong>: Shows packages (70 items) not tools (1000+ items)</li>
             <li><strong>Lazy loading</strong>: MCP servers only connect when their tools are requested</li>
-            <li><strong>Intelligent summarization</strong>: Descriptions truncated, schemas → skeletons</li>
+            <li><strong>Intelligent summarization</strong>: Full descriptions preserved, schemas → skeletons</li>
             <li><strong>Pagination</strong>: Tool lists chunked into 20-item pages</li>
             <li><strong>Output truncation</strong>: Large tool outputs can be capped via <code>max_output_chars</code>
             </li>

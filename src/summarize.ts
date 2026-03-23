@@ -4,9 +4,7 @@ const logger = getLogger();
 
 export function summarizeTool(tool: any): string {
   if (tool.description && typeof tool.description === "string") {
-    return tool.description.length > 200 
-      ? tool.description.substring(0, 197) + "..." 
-      : tool.description;
+    return tool.description;
   }
 
   if (tool.name) {
