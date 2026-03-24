@@ -261,28 +261,42 @@ export async function handleAuthenticate(
       logger.info("Waiting for OAuth callback", { package_id });
       
       try {
-        connectPromise.catch(err => {
-          const errMsg = formatError(err);
-          // DCR failures are NOT expected -- they mean the server doesn't support dynamic registration
-          // and the auth flow will never complete. Log as error so it's visible in diagnostics.
-          if (typeof errMsg === 'string' && errMsg.includes("does not support dynamic client registration")) {
-            logger.error("OAuth failed: server does not support dynamic client registration. Configure static oauthClientId/oauthClientSecret.", {
-              package_id,
-              error: errMsg,
-            });
-          } else {
-            logger.debug("OAuth redirect initiated (expected)", {
-              package_id,
-              error: errMsg,
-            });
-          }
-        });
-        
         // Wait for callback with state validation for CSRF protection
         // 5 minutes timeout - OAuth flows can take time (login, 2FA, permissions review, workspace selection)
         const callbackPromise = callbackServer.waitForCallback(300000, oauthState);
         
-        const authCode = await callbackPromise;
+        // Create a promise that rejects early if connectWithOAuth fails with a fatal error.
+        // Without this, a DCR failure or connect timeout would silently fail and the callback
+        // server would wait the full 5 minutes for a browser redirect that will never arrive.
+        const fatalConnectErrorPromise = new Promise<string>((_, reject) => {
+          connectPromise.catch(err => {
+            const errMsg = formatError(err);
+            const isFatalAuthError = typeof errMsg === 'string' && (
+              errMsg.includes("does not support dynamic client registration") ||
+              errMsg.includes("Incompatible auth server") ||
+              /timed?\s*out|timeout/i.test(errMsg) ||
+              errMsg.includes("client registration failed")
+            );
+            
+            if (isFatalAuthError) {
+              logger.error("OAuth failed with fatal error, aborting callback wait", {
+                package_id,
+                error: errMsg,
+              });
+              reject(new Error(`OAuth setup failed: ${errMsg}`));
+            } else {
+              logger.debug("OAuth redirect initiated (expected)", {
+                package_id,
+                error: errMsg,
+              });
+              // Non-fatal errors (e.g., redirect initiated) — don't abort the callback wait
+            }
+          });
+        });
+        
+        const authCode = await Promise.race([callbackPromise, fatalConnectErrorPromise]);
+        // Suppress unhandled rejection from the losing promise after the race settles
+        callbackPromise.catch(() => {});
         logger.info("OAuth callback received", { package_id, has_code: !!authCode });
         
         logger.info("Exchanging authorization code for tokens", { package_id });
@@ -356,10 +370,34 @@ export async function handleAuthenticate(
           };
         }
       } catch (error) {
+        const errMsg = formatError(error);
+        const isFatalSetupError = typeof errMsg === 'string' && errMsg.startsWith('OAuth setup failed:');
+        
         logger.error("OAuth failed", {
           package_id,
-          error: formatError(error),
+          error: errMsg,
+          isFatalSetupError,
         });
+        
+        // If this was a fatal setup error (DCR failure, connect timeout), return an
+        // actionable error immediately instead of falling through to the generic
+        // "check browser for OAuth prompt" message.
+        if (isFatalSetupError) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  package_id,
+                  status: "error",
+                  error: errMsg,
+                  message: "This connector's OAuth setup failed. It may require manual configuration (API key or pre-registered client credentials) instead of automatic sign-in.",
+                }, null, 2),
+              },
+            ],
+            isError: false,
+          };
+        }
       } finally {
         if (callbackServer) {
           try {
