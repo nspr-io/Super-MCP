@@ -269,7 +269,7 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
     return this.stateValue;
   }
   
-  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' = 'all') {
+  async invalidateCredentials(scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery' = 'all') {
     logger.info("Invalidating OAuth credentials", { 
       package_id: this.packageId,
       scope 
