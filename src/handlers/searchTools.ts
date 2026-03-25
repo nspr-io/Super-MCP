@@ -151,21 +151,31 @@ export async function handleSearchTools(
     const normalizedScore = maxScore > 0 ? rawScore / maxScore : 0;
     if (normalizedScore < threshold) continue;
 
-    // Check if tool is blocked by security or user-disabled
+    // Check if tool is blocked by security, admin-disabled, or user-disabled
     const rawToolId = toolId.includes("__")
       ? toolId.split("__").slice(1).join("__")
       : toolId;
     const blockCheck = securityPolicy.isToolBlocked(tool.package_id!, rawToolId);
+    const packageConfig = registry.getPackage(tool.package_id!);
+    const isAdminDisabled = securityPolicy.isAdminDisabled(packageConfig?.catalogId, rawToolId);
     const isUserDisabled = securityPolicy.isUserDisabled(tool.package_id!, rawToolId);
 
-    // Build result with appropriate blocked/userDisabled flags
-    // Security-blocked takes precedence over user-disabled
+    // Build result with appropriate blocked/userDisabled/adminDisabled flags
+    // Precedence: security-blocked > admin-disabled > user-disabled
     if (blockCheck.blocked) {
       results.push({
         ...tool,
         relevance_score: Math.round(normalizedScore * 100) / 100,
         blocked: true,
         blocked_reason: blockCheck.reason,
+      });
+    } else if (isAdminDisabled) {
+      results.push({
+        ...tool,
+        relevance_score: Math.round(normalizedScore * 100) / 100,
+        blocked: true,
+        blocked_reason: "Disabled by your organization's administrator",
+        admin_disabled: true,
       });
     } else if (isUserDisabled) {
       results.push({

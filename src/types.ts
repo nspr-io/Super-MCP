@@ -40,6 +40,11 @@ export interface SuperMcpConfig {
   // Server IDs are the keys in mcpServers (e.g., "GoogleWorkspace-greg-work-com", "Slack-mindstone")
   // Example: ["Slack-mindstone", "HubSpot"]
   disabledServers?: string[];
+  // Admin-disabled tools by catalog ID (set by organization administrators)
+  // Catalog IDs are connector identifiers (e.g., "bamboohr", "bundled-talentlms")
+  // Tool names are short names (e.g., "configure_talentlms"), not namespaced
+  // Example: { "bamboohr": ["bamboohr_add_employee_dependent"], "docusign": ["create_template"] }
+  adminDisabledToolsByCatalogId?: Record<string, string[]>;
 }
 
 export interface ExtendedServerConfig extends StandardServerConfig {
@@ -52,6 +57,9 @@ export interface ExtendedServerConfig extends StandardServerConfig {
   // Pre-registered OAuth client credentials (for servers that don't support DCR)
   oauthClientId?: string;
   oauthClientSecret?: string;
+  // Catalog ID for connector identification (e.g., "bamboohr", "bundled-google")
+  // Used for admin-disabled tool resolution across server instances
+  catalogId?: string;
 }
 
 export interface PackageConfig {
@@ -73,6 +81,9 @@ export interface PackageConfig {
   oauthClientId?: string;
   oauthClientSecret?: string;
   timeout?: number; // Tool execution timeout in milliseconds
+  // Catalog ID for connector identification (e.g., "bamboohr", "bundled-google")
+  // Used for admin-disabled tool resolution
+  catalogId?: string;
 }
 
 /**
@@ -126,6 +137,8 @@ export interface ToolInfo {
   blocked_reason?: string;
   /** True if this tool was disabled by user preference (separate from security policy) */
   user_disabled?: boolean;
+  /** True if this tool was disabled by an organization administrator */
+  admin_disabled?: boolean;
 }
 
 export interface ListToolPackagesInput {

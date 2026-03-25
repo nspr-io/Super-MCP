@@ -351,6 +351,22 @@ export async function handleUseTool(
     };
   }
 
+  // Check if tool is disabled by admin (takes precedence over user preference)
+  const packageConfig = registry.getPackage(package_id);
+  const catalogId = packageConfig?.catalogId;
+  if (securityPolicy.isAdminDisabled(catalogId, tool_id)) {
+    logger.warn("Blocked attempt to use admin-disabled tool", {
+      package_id,
+      tool_id,
+      catalog_id: catalogId,
+    });
+    throw {
+      code: ERROR_CODES.TOOL_BLOCKED,
+      message: `Tool '${package_id}__${tool_id}' is disabled by your organization's administrator`,
+      data: { package_id, tool_id, blocked_reason: "Disabled by administrator", admin_disabled: true },
+    };
+  }
+
   // Check if tool is disabled by user preference (separate from security policy)
   if (securityPolicy.isUserDisabled(package_id, tool_id)) {
     logger.warn("Blocked attempt to use user-disabled tool", {
@@ -363,8 +379,6 @@ export async function handleUseTool(
       data: { package_id, tool_id, blocked_reason: "Disabled by user", user_disabled: true },
     };
   }
-
-  const packageConfig = registry.getPackage(package_id);
   if (!packageConfig) {
     throw {
       code: ERROR_CODES.PACKAGE_NOT_FOUND,

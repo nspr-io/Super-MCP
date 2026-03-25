@@ -84,20 +84,26 @@ export class ConfigWatcher {
     logger.info("Reloading security configuration...");
     
     try {
-      const { securityConfig, userDisabledToolsByServer } = await this.loadMergedConfig();
+      const { securityConfig, userDisabledToolsByServer, adminDisabledToolsByCatalogId } = await this.loadMergedConfig();
       const newPolicy = new SecurityPolicy(securityConfig);
       
       // Set user-disabled tools on the new policy
       newPolicy.setUserDisabledTools(userDisabledToolsByServer);
       
+      // Set admin-disabled tools on the new policy
+      newPolicy.setAdminDisabledTools(adminDisabledToolsByCatalogId);
+      
       setSecurityPolicy(newPolicy);
       
       const summary = newPolicy.getSummary();
       const userDisabledSummary = newPolicy.getUserDisabledSummary();
+      const adminDisabledSummary = newPolicy.getAdminDisabledSummary();
       logger.info("Security policy reloaded successfully", {
         ...summary,
         user_disabled_servers: userDisabledSummary.serverCount,
         user_disabled_tools: userDisabledSummary.totalDisabled,
+        admin_disabled_catalogs: adminDisabledSummary.catalogCount,
+        admin_disabled_tools: adminDisabledSummary.totalDisabled,
       });
     } catch (error) {
       logger.error("Failed to reload security config, keeping existing policy", {
@@ -150,14 +156,16 @@ export class ConfigWatcher {
   }
 
   /**
-   * Load merged security config AND user-disabled tools from all config files.
+   * Load merged security config, user-disabled tools, and admin-disabled tools from all config files.
    */
   private async loadMergedConfig(): Promise<{
     securityConfig: SecurityConfig;
     userDisabledToolsByServer: Record<string, string[]>;
+    adminDisabledToolsByCatalogId: Record<string, string[]>;
   }> {
     const mergedSecurity: SecurityConfig = {};
     const mergedUserDisabled: Record<string, string[]> = {};
+    const mergedAdminDisabled: Record<string, string[]> = {};
     const visited = new Set<string>();
 
     const loadConfig = async (
@@ -238,6 +246,22 @@ export class ConfigWatcher {
         }
       }
 
+      // Merge admin-disabled tools by catalog ID
+      if (config.adminDisabledToolsByCatalogId &&
+          typeof config.adminDisabledToolsByCatalogId === 'object' &&
+          !Array.isArray(config.adminDisabledToolsByCatalogId)) {
+        for (const [catalogId, toolNames] of Object.entries(config.adminDisabledToolsByCatalogId)) {
+          if (!Array.isArray(toolNames)) continue;
+          // Filter to valid string tool names
+          const validToolNames = toolNames.filter((name): name is string =>
+            typeof name === 'string' && name.trim() !== ''
+          );
+          // Union arrays per catalog ID
+          const existing = mergedAdminDisabled[catalogId] || [];
+          mergedAdminDisabled[catalogId] = Array.from(new Set([...existing, ...validToolNames]));
+        }
+      }
+
       // Follow configPaths references
       if (config.configPaths && Array.isArray(config.configPaths)) {
         const baseDir = path.dirname(normalizedPath);
@@ -259,6 +283,7 @@ export class ConfigWatcher {
     return {
       securityConfig: mergedSecurity,
       userDisabledToolsByServer: mergedUserDisabled,
+      adminDisabledToolsByCatalogId: mergedAdminDisabled,
     };
   }
 }

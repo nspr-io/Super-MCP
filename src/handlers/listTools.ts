@@ -1,11 +1,13 @@
 import { ListToolsInput, ListToolsOutput, ERROR_CODES, ToolInfo } from "../types.js";
 import { Catalog } from "../catalog.js";
+import { PackageRegistry } from "../registry.js";
 import { getSecurityPolicy } from "../security.js";
 
 export async function handleListTools(
   input: ListToolsInput,
   catalog: Catalog,
-  _validator: any
+  _validator: any,
+  registry?: PackageRegistry
 ): Promise<any> {
   const {
     package_id,
@@ -39,8 +41,10 @@ export async function handleListTools(
     include_schemas,
   });
 
-  // Annotate tools with security blocked status and user-disabled status
+  // Annotate tools with security blocked status, admin-disabled, and user-disabled status
   const securityPolicy = getSecurityPolicy();
+  const packageConfig = registry?.getPackage(package_id);
+  const catalogId = packageConfig?.catalogId;
   const annotatedTools: ToolInfo[] = toolInfos.map(tool => {
     // Extract the raw tool name (without package prefix) for checking
     const rawToolId = tool.tool_id.includes('__') 
@@ -50,16 +54,29 @@ export async function handleListTools(
     // Check security policy first (takes precedence)
     const blockCheck = securityPolicy.isToolBlocked(package_id, rawToolId);
     
+    // Check admin-disabled status (takes precedence over user-disabled)
+    const isAdminDisabled = securityPolicy.isAdminDisabled(catalogId, rawToolId);
+    
     // Check user-disabled status (separate from security policy)
     const isUserDisabled = securityPolicy.isUserDisabled(package_id, rawToolId);
     
-    // Security-blocked takes precedence over user-disabled
+    // Security-blocked takes highest precedence
     if (blockCheck.blocked) {
       return {
         ...tool,
         blocked: true,
         blocked_reason: blockCheck.reason,
-        // Do NOT set user_disabled for security-blocked tools
+        // Do NOT set user_disabled or admin_disabled for security-blocked tools
+      };
+    }
+    
+    // Admin-disabled takes precedence over user-disabled
+    if (isAdminDisabled) {
+      return {
+        ...tool,
+        blocked: true,
+        blocked_reason: "Disabled by your organization's administrator",
+        admin_disabled: true,
       };
     }
     

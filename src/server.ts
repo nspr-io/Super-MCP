@@ -354,7 +354,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
             return await handleListToolPackages(args as any, registry, catalog);
 
           case "list_tools":
-            return await handleListTools(args as any, catalog, validator);
+            return await handleListTools(args as any, catalog, validator, registry);
 
           case "use_tool":
             return await handleUseTool(args as any, registry, catalog, validator);
@@ -507,6 +507,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
             blocked?: boolean;
             blocked_reason?: string;
             user_disabled?: boolean;
+            admin_disabled?: boolean;
           };
 
           const packages = registry.getPackages();
@@ -533,6 +534,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
 
                     // Check security policy
                     const blockCheck = securityPolicy.isToolBlocked(pkg.id, rawToolId);
+                    const isAdminDisabled = securityPolicy.isAdminDisabled(pkg.catalogId, rawToolId);
                     const isUserDisabled = securityPolicy.isUserDisabled(pkg.id, rawToolId);
 
                     const toolEntry: ToolEntry = {
@@ -545,10 +547,14 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
                       input_schema: tool.schema,
                     };
 
-                    // Security-blocked takes precedence
+                    // Precedence: security-blocked > admin-disabled > user-disabled
                     if (blockCheck.blocked) {
                       toolEntry.blocked = true;
                       toolEntry.blocked_reason = blockCheck.reason;
+                    } else if (isAdminDisabled) {
+                      toolEntry.blocked = true;
+                      toolEntry.blocked_reason = "Disabled by your organization's administrator";
+                      toolEntry.admin_disabled = true;
                     } else if (isUserDisabled) {
                       toolEntry.blocked = true;
                       toolEntry.blocked_reason = "Disabled by user";
@@ -572,12 +578,14 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
           // Flatten results while preserving package order
           const allTools = results.flat().filter((t): t is ToolEntry => t !== undefined);
 
-          // Include user-disabled hash in ETag to invalidate cache when user-disabled changes
+          // Include user-disabled and admin-disabled hashes in ETag to invalidate cache when they change
           // Use content hash (not just count) so swapping disabled tools invalidates cache
           const userDisabledSummary = securityPolicy.getUserDisabledSummary();
           const userDisabledHash = securityPolicy.getUserDisabledHash();
+          const adminDisabledSummary = securityPolicy.getAdminDisabledSummary();
+          const adminDisabledHash = securityPolicy.getAdminDisabledHash();
           const baseEtag = catalog.etag();
-          const combinedEtag = `"${baseEtag.replace(/"/g, '')}-ud${userDisabledHash}"`;
+          const combinedEtag = `"${baseEtag.replace(/"/g, '')}-ud${userDisabledHash}-ad${adminDisabledHash}"`;
           
           res.setHeader("ETag", combinedEtag);
           res.json({
@@ -586,6 +594,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
             tool_count: allTools.length,
             package_count: packages.length,
             user_disabled_count: userDisabledSummary.totalDisabled,
+            admin_disabled_count: adminDisabledSummary.totalDisabled,
             generated_at: new Date().toISOString(),
           });
         } catch (error) {

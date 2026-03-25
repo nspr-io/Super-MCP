@@ -44,6 +44,10 @@ export class SecurityPolicy {
   // User-disabled tools per server (separate from security policy)
   // Key: serverId, Value: Set of short tool names
   private userDisabledToolsByServer: Map<string, Set<string>> = new Map();
+  
+  // Admin-disabled tools per catalog ID (set by organization administrators)
+  // Key: catalogId, Value: Set of short tool names
+  private adminDisabledToolsByCatalogId: Map<string, Set<string>> = new Map();
 
   constructor(config: SecurityConfig = {}) {
     this.config = config;
@@ -335,6 +339,79 @@ export class SecurityPolicy {
     let hash = 5381;
     for (let i = 0; i < sortedServers.length; i++) {
       hash = ((hash << 5) + hash) + sortedServers.charCodeAt(i);
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(36);
+  }
+
+  /**
+   * Set admin-disabled tools by catalog ID.
+   * @param disabledByCatalogId Record mapping catalog IDs to arrays of disabled tool names (short names)
+   */
+  setAdminDisabledTools(disabledByCatalogId: Record<string, string[]>): void {
+    this.adminDisabledToolsByCatalogId.clear();
+    
+    for (const [catalogId, toolNames] of Object.entries(disabledByCatalogId)) {
+      if (Array.isArray(toolNames) && toolNames.length > 0) {
+        this.adminDisabledToolsByCatalogId.set(catalogId, new Set(toolNames));
+      }
+    }
+    
+    const totalDisabled = Array.from(this.adminDisabledToolsByCatalogId.values())
+      .reduce((sum, set) => sum + set.size, 0);
+    
+    if (totalDisabled > 0) {
+      logger.info("Admin-disabled tools configured", {
+        catalog_count: this.adminDisabledToolsByCatalogId.size,
+        total_disabled_tools: totalDisabled,
+      });
+    }
+  }
+
+  /**
+   * Check if a tool is disabled by an organization administrator.
+   * @param catalogId The catalog ID of the package (e.g., "bamboohr", "bundled-google")
+   * @param toolName The short tool name (e.g., "delete_file", not "filesystem__delete_file")
+   * @returns true if the tool is admin-disabled
+   */
+  isAdminDisabled(catalogId: string | undefined, toolName: string): boolean {
+    if (!catalogId) return false;
+    const disabledTools = this.adminDisabledToolsByCatalogId.get(catalogId);
+    return disabledTools?.has(toolName) ?? false;
+  }
+
+  /**
+   * Get a summary of admin-disabled tools for logging.
+   */
+  getAdminDisabledSummary(): { catalogCount: number; totalDisabled: number } {
+    const totalDisabled = Array.from(this.adminDisabledToolsByCatalogId.values())
+      .reduce((sum, set) => sum + set.size, 0);
+    return {
+      catalogCount: this.adminDisabledToolsByCatalogId.size,
+      totalDisabled,
+    };
+  }
+
+  /**
+   * Get a deterministic hash of admin-disabled tools for ETag generation.
+   * Returns a short hash string that changes when any admin-disabled tool changes.
+   */
+  getAdminDisabledHash(): string {
+    if (this.adminDisabledToolsByCatalogId.size === 0) {
+      return "0";
+    }
+    // Build sorted representation: "catalogId1:tool1,tool2;catalogId2:tool3"
+    const sortedCatalogs = Array.from(this.adminDisabledToolsByCatalogId.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([catalogId, tools]) => {
+        const sortedTools = Array.from(tools).sort().join(',');
+        return `${catalogId}:${sortedTools}`;
+      })
+      .join(';');
+    // Simple hash function (djb2)
+    let hash = 5381;
+    for (let i = 0; i < sortedCatalogs.length; i++) {
+      hash = ((hash << 5) + hash) + sortedCatalogs.charCodeAt(i);
       hash = hash & hash; // Convert to 32-bit integer
     }
     return Math.abs(hash).toString(36);

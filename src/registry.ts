@@ -152,6 +152,7 @@ export class PackageRegistry {
           oauth: extConfig.oauth,
           oauthClientId: extConfig.oauthClientId,
           oauthClientSecret: extConfig.oauthClientSecret,
+          catalogId: extConfig.catalogId,
         };
         
         packages.push(pkg);
@@ -175,7 +176,8 @@ export class PackageRegistry {
       mcpServers: {},
       security: {},
       userDisabledToolsByServer: {},
-      disabledServers: []
+      disabledServers: [],
+      adminDisabledToolsByCatalogId: {},
     };
 
     // Track visited paths to detect circular references (using normalized/resolved paths)
@@ -361,6 +363,38 @@ export class PackageRegistry {
         });
       }
 
+      // Merge admin-disabled tools by catalog ID (union arrays per catalog ID)
+      if (config.adminDisabledToolsByCatalogId && typeof config.adminDisabledToolsByCatalogId === 'object' && !Array.isArray(config.adminDisabledToolsByCatalogId)) {
+        const adminDisabled = mergedConfig.adminDisabledToolsByCatalogId!;
+        for (const [catalogId, toolNames] of Object.entries(config.adminDisabledToolsByCatalogId)) {
+          if (!Array.isArray(toolNames)) {
+            logger.warn("Invalid adminDisabledToolsByCatalogId entry (not an array), skipping", {
+              config_file: normalizedPath,
+              catalog_id: catalogId
+            });
+            continue;
+          }
+          // Filter to valid string tool names only
+          const validToolNames = toolNames.filter((name): name is string => typeof name === 'string' && name.trim() !== '');
+          if (validToolNames.length !== toolNames.length) {
+            logger.warn("Some tool names in adminDisabledToolsByCatalogId were invalid (non-string or empty), filtering", {
+              config_file: normalizedPath,
+              catalog_id: catalogId,
+              original_count: toolNames.length,
+              valid_count: validToolNames.length
+            });
+          }
+          // Union the arrays (dedupe by using Set)
+          const existingTools = adminDisabled[catalogId] || [];
+          const allTools = new Set([...existingTools, ...validToolNames]);
+          adminDisabled[catalogId] = Array.from(allTools);
+        }
+        logger.debug("Merged adminDisabledToolsByCatalogId config", {
+          config_file: normalizedPath,
+          catalog_count: Object.keys(config.adminDisabledToolsByCatalogId).length,
+        });
+      }
+
       // Handle root-level server entries (for configs like Klavis that don't use mcpServers wrapper)
       // A server config is identified by having 'url' (HTTP) or 'command' (stdio)
       const knownMetadataKeys = new Set(['mcpServers', 'packages', 'configPaths', 'security', 'userDisabledToolsByServer', 'disabledServers']);
@@ -440,15 +474,23 @@ export class PackageRegistry {
       securityPolicy.setUserDisabledTools(mergedConfig.userDisabledToolsByServer);
     }
     
+    // Set admin-disabled tools on the security policy
+    if (mergedConfig.adminDisabledToolsByCatalogId) {
+      securityPolicy.setAdminDisabledTools(mergedConfig.adminDisabledToolsByCatalogId);
+    }
+    
     setSecurityPolicy(securityPolicy);
     
     const secSummary = securityPolicy.getSummary();
     const userDisabledSummary = securityPolicy.getUserDisabledSummary();
-    if (secSummary.mode !== "disabled" || userDisabledSummary.totalDisabled > 0) {
+    const adminDisabledSummary = securityPolicy.getAdminDisabledSummary();
+    if (secSummary.mode !== "disabled" || userDisabledSummary.totalDisabled > 0 || adminDisabledSummary.totalDisabled > 0) {
       logger.info("Security policy active", {
         ...secSummary,
         user_disabled_servers: userDisabledSummary.serverCount,
         user_disabled_tools: userDisabledSummary.totalDisabled,
+        admin_disabled_catalogs: adminDisabledSummary.catalogCount,
+        admin_disabled_tools: adminDisabledSummary.totalDisabled,
       });
     }
 
@@ -928,6 +970,7 @@ export class PackageRegistry {
       oauth: extConfig.oauth,
       oauthClientId: extConfig.oauthClientId,
       oauthClientSecret: extConfig.oauthClientSecret,
+      catalogId: extConfig.catalogId,
     };
   }
 
