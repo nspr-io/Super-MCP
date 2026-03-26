@@ -173,6 +173,8 @@ export interface UseToolInput {
   args: any;
   dry_run?: boolean;
   max_output_chars?: number | null;
+  result_id?: string;
+  output_offset?: number;
 }
 
 export interface UseToolOutput {
@@ -186,6 +188,7 @@ export interface UseToolOutput {
     output_chars?: number;
     output_truncated?: boolean;
     original_output_chars?: number;
+    result_id?: string;
   };
 }
 

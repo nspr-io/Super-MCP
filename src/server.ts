@@ -184,6 +184,14 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
                   type: ["number", "null"],
                   description: "Maximum characters to return in the output. If the tool output exceeds this limit, text content will be truncated. Use null for unlimited output.",
                 },
+                result_id: {
+                  type: "string",
+                  description: "Retrieve cached output from a previous truncated call. When provided, output_offset is required and package_id/tool_id/args are ignored.",
+                },
+                output_offset: {
+                  type: "number",
+                  description: "Character offset to start reading from in the cached result (used with result_id). Use 0 to get the full untruncated output.",
+                },
               },
               required: ["package_id", "tool_id", "args"],
               examples: [

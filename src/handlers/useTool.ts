@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { UseToolInput, UseToolOutput, ERROR_CODES } from "../types.js";
 import { PackageRegistry } from "../registry.js";
 import { Catalog } from "../catalog.js";
@@ -8,6 +9,86 @@ import { getSecurityPolicy } from "../security.js";
 import { findBestMatch } from "../utils/fuzzyMatch.js";
 
 const logger = getLogger();
+
+// --- Continuation cache for truncated results ---
+interface CachedResult {
+  serializedOutput: string;
+  totalChars: number;
+  createdAt: number;
+}
+const RESULT_CACHE_MAX_SIZE = 50;
+const RESULT_CACHE_TTL_MS = 5 * 60 * 1000;
+const resultCache = new Map<string, CachedResult>();
+
+function evictExpiredEntries(): void {
+  const now = Date.now();
+  for (const [key, entry] of resultCache) {
+    if (now - entry.createdAt > RESULT_CACHE_TTL_MS) {
+      resultCache.delete(key);
+    }
+  }
+}
+
+function cacheResult(id: string, serialized: string): void {
+  evictExpiredEntries();
+  if (resultCache.size >= RESULT_CACHE_MAX_SIZE) {
+    let oldestKey: string | undefined;
+    let oldestTime = Infinity;
+    for (const [key, entry] of resultCache) {
+      if (entry.createdAt < oldestTime) {
+        oldestTime = entry.createdAt;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) resultCache.delete(oldestKey);
+  }
+  resultCache.set(id, { serializedOutput: serialized, totalChars: serialized.length, createdAt: Date.now() });
+}
+
+function getCachedResult(id: string): CachedResult | undefined {
+  const entry = resultCache.get(id);
+  if (!entry) return undefined;
+  if (Date.now() - entry.createdAt > RESULT_CACHE_TTL_MS) {
+    resultCache.delete(id);
+    return undefined;
+  }
+  return entry;
+}
+
+function handleContinuation(
+  resultId: string,
+  offset: number,
+  maxOutputChars: number | null | undefined,
+): { content: Array<{ type: string; text: string }>; isError: boolean } {
+  if (offset < 0 || !Number.isFinite(offset)) {
+    return { content: [{ type: "text", text: `Error: output_offset must be a non-negative number (got ${offset}).` }], isError: true };
+  }
+  const cached = getCachedResult(resultId);
+  if (!cached) {
+    return { content: [{ type: "text", text: "Cached result expired or not found. Please re-run the original tool call." }], isError: true };
+  }
+  if (offset >= cached.totalChars) {
+    return { content: [{ type: "text", text: `No more data (offset ${offset} >= total ${cached.totalChars} chars).` }], isError: false };
+  }
+  const effectiveLimit = maxOutputChars === null ? undefined : (maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS);
+  const chunkEnd = effectiveLimit !== undefined ? Math.min(offset + effectiveLimit, cached.totalChars) : cached.totalChars;
+  const chunk = cached.serializedOutput.slice(offset, chunkEnd);
+  const hasMore = chunkEnd < cached.totalChars;
+  const response = {
+    continuation: true,
+    result_id: resultId,
+    offset,
+    length: chunk.length,
+    total_chars: cached.totalChars,
+    has_more: hasMore,
+    content: chunk,
+  };
+  let text = JSON.stringify(response, null, 2);
+  if (hasMore) {
+    text += `\n\n[To get the next chunk: use_tool({ package_id: "_", tool_id: "_", args: {}, result_id: "${resultId}", output_offset: ${chunkEnd} })]`;
+  }
+  return { content: [{ type: "text", text }], isError: false };
+}
 const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
 const MAX_SCHEMA_FRAGMENTS = 5;
@@ -386,6 +467,15 @@ export async function handleUseTool(
     };
   }
 
+  // Continuation: retrieve cached truncated result (before any validation/security)
+  const { _rebel_staged: _, _rebel_staged_message: __, ...cleanForContinuation } = input;
+  if (cleanForContinuation.result_id) {
+    if (cleanForContinuation.output_offset === undefined || cleanForContinuation.output_offset === null) {
+      return { content: [{ type: "text", text: "Error: output_offset is required when using result_id." }], isError: true };
+    }
+    return handleContinuation(cleanForContinuation.result_id, cleanForContinuation.output_offset, cleanForContinuation.max_output_chars);
+  }
+
   // Strip rebel-internal flags so they never leak to downstream tool handlers
   const { _rebel_staged, _rebel_staged_message, ...cleanInput } = input;
 
@@ -580,11 +670,21 @@ export async function handleUseTool(
     let outputJson = JSON.stringify(result, null, 2);
 
     if (wasTruncated && effectiveLimit !== undefined) {
+      const resultId = randomUUID();
+
+      // Cache the full untruncated output for continuation
+      const fullSerializedOutput = JSON.stringify(untruncatedResult, null, 2);
+      cacheResult(resultId, fullSerializedOutput);
+
       result.telemetry.output_truncated = true;
       result.telemetry.original_output_chars = originalOutputChars;
+      result.telemetry.result_id = resultId;
       outputJson = JSON.stringify(result, null, 2);
       result.telemetry.output_chars = outputJson.length;
       outputJson = JSON.stringify(result, null, 2);
+
+      // Continuation hint — offset 0 returns the full untruncated output from the start
+      outputJson += `\n\n[To retrieve the full untruncated result: use_tool({ package_id: "${package_id}", tool_id: "${tool_id}", args: {}, result_id: "${resultId}", output_offset: 0 })]`;
 
       logger.warn("Tool output truncated", {
         package_id,
@@ -592,6 +692,7 @@ export async function handleUseTool(
         original_chars: originalOutputChars,
         truncated_to: effectiveLimit,
         estimated_tokens: estimatedTokens,
+        result_id: resultId,
       });
     }
     else if (effectiveLimit === undefined && originalOutputChars > LARGE_OUTPUT_WARNING_THRESHOLD) {
