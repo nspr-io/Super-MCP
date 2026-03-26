@@ -181,8 +181,8 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
                   default: false,
                 },
                 max_output_chars: {
-                  type: "number",
-                  description: "Maximum characters to return in the output. If the tool output exceeds this limit, it will be truncated. Use this to prevent context overflow when working with tools that may return large amounts of data.",
+                  type: ["number", "null"],
+                  description: "Maximum characters to return in the output. If the tool output exceeds this limit, text content will be truncated. Use null for unlimited output.",
                 },
               },
               required: ["package_id", "tool_id", "args"],

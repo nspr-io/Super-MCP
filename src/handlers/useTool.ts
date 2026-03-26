@@ -9,6 +9,7 @@ import { findBestMatch } from "../utils/fuzzyMatch.js";
 
 const logger = getLogger();
 const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
+const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
 const MAX_SCHEMA_FRAGMENTS = 5;
 const FULL_SCHEMA_FRAGMENT_KEY = "__full_schema";
 const STOP_RETRYING_MESSAGE = "Arguments may require user clarification. Please ask the user for specifics.";
@@ -29,6 +30,84 @@ interface RepairTicket {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+interface TextContentBlock {
+  type: "text";
+  text: string;
+  [key: string]: unknown;
+}
+
+function isTextContentBlock(value: unknown): value is TextContentBlock {
+  return isRecord(value) && value.type === "text" && typeof value.text === "string";
+}
+
+function truncateToolResultTextContent(
+  toolResult: unknown,
+  requestedLimit: number,
+): { toolResult: unknown; truncated: boolean } {
+  if (!isRecord(toolResult) || !Array.isArray(toolResult.content)) {
+    return { toolResult, truncated: false };
+  }
+
+  const normalizedLimit = Math.max(0, Math.floor(requestedLimit));
+  const content = toolResult.content;
+  const totalTextChars = content.reduce((total, block) => {
+    if (!isTextContentBlock(block)) {
+      return total;
+    }
+    return total + block.text.length;
+  }, 0);
+
+  if (totalTextChars <= normalizedLimit) {
+    return { toolResult, truncated: false };
+  }
+
+  const truncationMessage = `\n\n[Result truncated to ${normalizedLimit} chars. Re-run with larger max_output_chars if you need the full output, or pass null for unlimited.]`;
+  let remainingChars = normalizedLimit;
+  let messageAppended = false;
+
+  const truncatedContent = content.map((block) => {
+    if (!isTextContentBlock(block)) {
+      return block;
+    }
+
+    if (remainingChars > 0) {
+      if (block.text.length <= remainingChars) {
+        remainingChars -= block.text.length;
+        return block;
+      }
+
+      const truncatedText = block.text.slice(0, remainingChars);
+      remainingChars = 0;
+      messageAppended = true;
+      return {
+        ...block,
+        text: `${truncatedText}${truncationMessage}`,
+      };
+    }
+
+    if (!messageAppended) {
+      messageAppended = true;
+      return {
+        ...block,
+        text: truncationMessage,
+      };
+    }
+
+    return {
+      ...block,
+      text: "",
+    };
+  });
+
+  return {
+    toolResult: {
+      ...toolResult,
+      content: truncatedContent,
+    },
+    truncated: true,
+  };
 }
 
 function getValidationAttemptKey(packageId: string, toolId: string): string {
@@ -468,36 +547,54 @@ export async function handleUseTool(
     registry.notifyActivity(package_id);
     const duration = Date.now() - startTime;
 
-    const result: UseToolOutput = {
+    const effectiveLimit = max_output_chars === null
+      ? undefined
+      : (max_output_chars ?? DEFAULT_MAX_OUTPUT_CHARS);
+
+    let finalToolResult: unknown = toolResult;
+    let wasTruncated = false;
+    if (effectiveLimit !== undefined) {
+      const truncationResult = truncateToolResultTextContent(toolResult, effectiveLimit);
+      finalToolResult = truncationResult.toolResult;
+      wasTruncated = truncationResult.truncated;
+    }
+
+    const untruncatedResult: UseToolOutput = {
       package_id,
       tool_id,
       args_used: args,
       result: toolResult,
       telemetry: { duration_ms: duration, status: "ok" },
     };
-
-    let outputJson = JSON.stringify(result, null, 2);
-    const originalOutputChars = outputJson.length;
+    const originalOutputChars = JSON.stringify(untruncatedResult, null, 2).length;
     const estimatedTokens = Math.ceil(originalOutputChars / 4);
 
-    if (max_output_chars && originalOutputChars > max_output_chars) {
-      const truncatedJson = outputJson.slice(0, max_output_chars);
-      
+    const result: UseToolOutput = {
+      package_id,
+      tool_id,
+      args_used: args,
+      result: finalToolResult,
+      telemetry: { duration_ms: duration, status: "ok" },
+    };
+
+    let outputJson = JSON.stringify(result, null, 2);
+
+    if (wasTruncated && effectiveLimit !== undefined) {
       result.telemetry.output_truncated = true;
       result.telemetry.original_output_chars = originalOutputChars;
-      result.telemetry.output_chars = max_output_chars;
-      
-      outputJson = truncatedJson + `\n\n[OUTPUT TRUNCATED: Showing ${max_output_chars.toLocaleString()} of ${originalOutputChars.toLocaleString()} characters (~${estimatedTokens.toLocaleString()} tokens). To get the complete output, retry without max_output_chars or with a higher limit.]`;
-      
+      outputJson = JSON.stringify(result, null, 2);
+      result.telemetry.output_chars = outputJson.length;
+      outputJson = JSON.stringify(result, null, 2);
+
       logger.warn("Tool output truncated", {
         package_id,
         tool_id,
         original_chars: originalOutputChars,
-        truncated_to: max_output_chars,
+        truncated_to: effectiveLimit,
         estimated_tokens: estimatedTokens,
       });
     }
-    else if (!max_output_chars && originalOutputChars > LARGE_OUTPUT_WARNING_THRESHOLD) {
+    else if (effectiveLimit === undefined && originalOutputChars > LARGE_OUTPUT_WARNING_THRESHOLD) {
       result.telemetry.output_chars = originalOutputChars;
       
       outputJson = JSON.stringify(result, null, 2);
@@ -511,7 +608,7 @@ export async function handleUseTool(
         warning_threshold: LARGE_OUTPUT_WARNING_THRESHOLD,
       });
     } else {
-      result.telemetry.output_chars = originalOutputChars;
+      result.telemetry.output_chars = outputJson.length;
       outputJson = JSON.stringify(result, null, 2);
     }
 

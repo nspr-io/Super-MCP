@@ -172,7 +172,7 @@ export interface UseToolInput {
   tool_id: string;
   args: any;
   dry_run?: boolean;
-  max_output_chars?: number;
+  max_output_chars?: number | null;
 }
 
 export interface UseToolOutput {
