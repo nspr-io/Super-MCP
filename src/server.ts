@@ -57,18 +57,24 @@ export async function startServer(options: {
     const configWatcher = new ConfigWatcher(paths);
     await configWatcher.start();
 
-    const server = new Server(
-      {
-        name: "super-mcp-router",
-        version: "0.1.0",
-      },
-      {
-        capabilities: {
-          tools: {},
-          resources: {},
+    function createMcpServer(): Server {
+      const srv = new Server(
+        {
+          name: "super-mcp-router",
+          version: "0.1.0",
         },
-      }
-    );
+        {
+          capabilities: {
+            tools: {},
+            resources: {},
+          },
+        }
+      );
+      registerHandlers(srv);
+      return srv;
+    }
+
+    function registerHandlers(server: Server): void {
 
     server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
@@ -465,6 +471,8 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
       }
     });
 
+    } // end registerHandlers
+
     if (transport === "http") {
       const app = express();
 
@@ -489,14 +497,26 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
 
       app.use(express.json());
 
-      const createHttpTransport = () =>
-        new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => crypto.randomUUID(),
-        });
+      interface SessionEntry {
+        server: Server;
+        transport: StreamableHTTPServerTransport;
+        lastActive: number;
+      }
+      const sessions = new Map<string, SessionEntry>();
 
-      let httpTransport = createHttpTransport();
+      const SESSION_IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+      const GC_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-      await server.connect(httpTransport);
+      const gcInterval = setInterval(() => {
+        const now = Date.now();
+        for (const [id, entry] of sessions) {
+          if (now - entry.lastActive > SESSION_IDLE_TIMEOUT_MS) {
+            logger.debug("Reaping idle MCP session", { sessionId: id });
+            entry.server.close().catch(() => {});
+            sessions.delete(id);
+          }
+        }
+      }, GC_INTERVAL_MS);
 
       app.get("/health", (_req, res) => {
         res.json({ status: "ok", transport: "http" });
@@ -633,19 +653,45 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
                   typeof message === "object" && message !== null && message.method === "initialize"
               ));
 
-          if (isInitializeRequest && httpTransport) {
-            try {
-              await server.close();
-            } catch (closeErr) {
-              logger.warn("Error closing server during transport recreation", {
-                error: formatError(closeErr),
-              });
-            }
-            httpTransport = createHttpTransport();
-            await server.connect(httpTransport);
+          if (isInitializeRequest) {
+            const sessionServer = createMcpServer();
+            const sessionTransport = new StreamableHTTPServerTransport({
+              sessionIdGenerator: () => crypto.randomUUID(),
+              onsessioninitialized: (sessionId: string) => {
+                sessions.set(sessionId, {
+                  server: sessionServer,
+                  transport: sessionTransport,
+                  lastActive: Date.now(),
+                });
+                logger.debug("MCP session initialized", { sessionId, activeSessions: sessions.size });
+              },
+              onsessionclosed: (sessionId: string) => {
+                sessions.delete(sessionId);
+                sessionServer.close().catch(() => {});
+                logger.debug("MCP session closed", { sessionId, activeSessions: sessions.size });
+              },
+            });
+            await sessionServer.connect(sessionTransport);
+            await sessionTransport.handleRequest(req, res, req.body);
+            return;
           }
 
-          await httpTransport.handleRequest(req, res, req.body);
+          // Non-initialize requests: route by session ID
+          // Express lowercases headers; MCP SDK sends 'Mcp-Session-Id' which becomes 'mcp-session-id'
+          const sessionId = req.headers['mcp-session-id'] as string | undefined;
+          if (!sessionId) {
+            res.status(400).json({ error: "Bad Request: Mcp-Session-Id header is required" });
+            return;
+          }
+
+          const session = sessions.get(sessionId);
+          if (!session) {
+            res.status(404).json({ error: "Session not found" });
+            return;
+          }
+
+          session.lastActive = Date.now();
+          await session.transport.handleRequest(req, res, req.body);
         } catch (error) {
           logger.error("Failed to handle MCP request", {
             error: formatError(error),
@@ -670,12 +716,16 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
 
       const shutdown = async () => {
         logger.info("Shutting down HTTP server...");
+        clearInterval(gcInterval);
         await configWatcher.stop();
         httpServer.close(() => {
           logger.info("HTTP server closed");
         });
-        await httpTransport.close();
-        logger.info("HTTP transport closed");
+        for (const [id, entry] of sessions) {
+          await entry.server.close().catch(() => {});
+          sessions.delete(id);
+        }
+        logger.info("All MCP sessions closed");
         await registry.closeAll();
         process.exit(0);
       };
@@ -683,6 +733,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
     } else {
+      const server = createMcpServer();
       const stdioTransport = new StdioServerTransport();
       await server.connect(stdioTransport);
 
