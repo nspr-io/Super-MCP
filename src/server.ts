@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import crypto from "node:crypto";
 import express from "express";
 import PQueue from "p-queue";
 import { ERROR_CODES } from "./types.js";
@@ -488,9 +489,12 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
 
       app.use(express.json());
 
-      const httpTransport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-      });
+      const createHttpTransport = () =>
+        new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => crypto.randomUUID(),
+        });
+
+      let httpTransport = createHttpTransport();
 
       await server.connect(httpTransport);
 
@@ -620,6 +624,27 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
 
       const mcpHandler = async (req: any, res: any) => {
         try {
+          const body = req.body;
+          const isInitializeRequest =
+            (typeof body === "object" && body !== null && !Array.isArray(body) && body.method === "initialize") ||
+            (Array.isArray(body) &&
+              body.some(
+                (message: any) =>
+                  typeof message === "object" && message !== null && message.method === "initialize"
+              ));
+
+          if (isInitializeRequest && httpTransport) {
+            try {
+              await server.close();
+            } catch (closeErr) {
+              logger.warn("Error closing server during transport recreation", {
+                error: formatError(closeErr),
+              });
+            }
+            httpTransport = createHttpTransport();
+            await server.connect(httpTransport);
+          }
+
           await httpTransport.handleRequest(req, res, req.body);
         } catch (error) {
           logger.error("Failed to handle MCP request", {
@@ -633,6 +658,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
 
       app.post("/mcp", mcpHandler);
       app.get("/mcp", mcpHandler);
+      app.delete("/mcp", mcpHandler);
 
       const httpServer = app.listen(port, '127.0.0.1', () => {
         logger.info("Super MCP Router started successfully", {
