@@ -149,28 +149,28 @@ list_tools(package_id: "github", detail: "full")
 
 ## Common Error Codes
 
-### -32001: PACKAGE_NOT_FOUND
+### -33001: PACKAGE_NOT_FOUND
 - The package_id doesn't exist
 - Solution: Use \`list_tool_packages\` to see valid package IDs
 
-### -32002: TOOL_NOT_FOUND
+### -33002: TOOL_NOT_FOUND
 - The tool_id doesn't exist in the specified package
 - Solution: Use \`list_tools(package_id: "...", detail: "lite")\` to browse tools, or \`search_tools(query: "...")\` to find by intent
 
-### -32003: ARG_VALIDATION_FAILED
+### -33003: ARG_VALIDATION_FAILED
 - Arguments don't match the tool's schema
 - Solution: Use \`get_tool_details\` to review the exact schema, then fix your arguments
 - Use dry_run: true to test arguments
 
-### -32004: PACKAGE_UNAVAILABLE
+### -33004: PACKAGE_UNAVAILABLE
 - Package is configured but not responding
 - Solution: Check \`health_check_all\` and verify configuration
 
-### -32005: AUTH_REQUIRED
+### -33005: AUTH_REQUIRED
 - Package needs authentication
 - Solution: Use \`authenticate(package_id)\`
 
-### -32007: DOWNSTREAM_ERROR
+### -33007: DOWNSTREAM_ERROR
 - The underlying MCP server returned an error
 - Solution: Check error details and tool documentation
 
@@ -260,7 +260,7 @@ Different packages offer different capabilities:
 
 export function getErrorHelp(errorCode: number): string {
   const errorHelp: Record<number, string> = {
-    [-32001]: `# Error -32001: PACKAGE_NOT_FOUND
+    [-33001]: `# Error -33001: PACKAGE_NOT_FOUND
 
 This error means the package_id you specified doesn't exist.
 
@@ -274,7 +274,7 @@ This error means the package_id you specified doesn't exist.
 - Package not configured in super-mcp-config.json
 - Using tool name instead of package_id`,
 
-    [-32002]: `# Error -32002: TOOL_NOT_FOUND
+    [-33002]: `# Error -33002: TOOL_NOT_FOUND
 
 The tool_id doesn't exist in the specified package.
 
@@ -288,7 +288,7 @@ The tool_id doesn't exist in the specified package.
 - Tool name changed or deprecated
 - Case sensitivity issues`,
 
-    [-32003]: `# Error -32003: ARG_VALIDATION_FAILED
+    [-33003]: `# Error -33003: ARG_VALIDATION_FAILED
 
 The arguments provided don't match the tool's expected schema.
 
@@ -304,7 +304,7 @@ The arguments provided don't match the tool's expected schema.
 - Invalid enum values
 - Incorrect nesting of objects`,
 
-    [-32004]: `# Error -32004: PACKAGE_UNAVAILABLE
+    [-33004]: `# Error -33004: PACKAGE_UNAVAILABLE
 
 The package exists but isn't responding.
 
@@ -319,7 +319,7 @@ The package exists but isn't responding.
 - Network issues for HTTP packages
 - Incorrect configuration in super-mcp-config.json`,
 
-    [-32005]: `# Error -32005: AUTH_REQUIRED
+    [-33005]: `# Error -33005: AUTH_REQUIRED
 
 The package requires authentication before use.
 
@@ -335,7 +335,7 @@ The package requires authentication before use.
 - Use \`force: true\` when tokens are stale but the system thinks auth is valid
 - Check package documentation for auth setup`,
 
-    [-32007]: `# Error -32007: DOWNSTREAM_ERROR
+    [-33007]: `# Error -33007: DOWNSTREAM_ERROR
 
 The underlying MCP server returned an error.
 

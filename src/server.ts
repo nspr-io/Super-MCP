@@ -270,14 +270,14 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
                 error_code: {
                   type: "number",
                   description: "Get help for a specific error code",
-                  examples: [-32001, -32002, -32003],
+                  examples: [-33001, -33002, -33003],
                 },
               },
               examples: [
                 { topic: "getting_started" },
                 { topic: "workflow" },
                 { package_id: "github" },
-                { error_code: -32005 }
+                { error_code: -33005 }
               ],
             },
           },

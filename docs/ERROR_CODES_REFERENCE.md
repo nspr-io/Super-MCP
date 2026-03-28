@@ -17,14 +17,14 @@ Super-MCP uses JSON-RPC 2.0 standard error codes alongside custom application-sp
 | Code | Name | Description |
 |------|------|-------------|
 | -32602 | INVALID_PARAMS | Invalid parameters provided |
-| -32001 | PACKAGE_NOT_FOUND | Package ID not in configuration |
-| -32002 | TOOL_NOT_FOUND | Tool not found in package |
-| -32003 | ARG_VALIDATION_FAILED | Tool arguments don't match schema |
-| -32004 | PACKAGE_UNAVAILABLE | Package not connected (auth/network) |
-| -32005 | AUTH_REQUIRED | Package requires authentication |
-| -32006 | AUTH_INCOMPLETE | OAuth flow not finished |
-| -32007 | DOWNSTREAM_ERROR | Error from upstream MCP server |
-| -32008 | TOOL_BLOCKED | Tool blocked by security policy |
+| -33001 | PACKAGE_NOT_FOUND | Package ID not in configuration |
+| -33002 | TOOL_NOT_FOUND | Tool not found in package |
+| -33003 | ARG_VALIDATION_FAILED | Tool arguments don't match schema |
+| -33004 | PACKAGE_UNAVAILABLE | Package not connected (auth/network) |
+| -33005 | AUTH_REQUIRED | Package requires authentication |
+| -33006 | AUTH_INCOMPLETE | OAuth flow not finished |
+| -33007 | DOWNSTREAM_ERROR | Error from upstream MCP server |
+| -33008 | TOOL_BLOCKED | Tool blocked by security policy |
 | -32603 | INTERNAL_ERROR | Internal server error |
 
 ---
@@ -55,7 +55,7 @@ Invalid params: missing required field 'package_id'
 
 ---
 
-### -32001: PACKAGE_NOT_FOUND
+### -33001: PACKAGE_NOT_FOUND
 
 The specified `package_id` does not exist in the Super-MCP configuration.
 
@@ -70,7 +70,7 @@ The specified `package_id` does not exist in the Super-MCP configuration.
 2. Copy the exact package_id from the response
 3. Verify the package is defined in your configuration file
 
-**Related get_help:** `get_help(error_code: -32001)`
+**Related get_help:** `get_help(error_code: -33001)`
 
 **Example log message:**
 ```
@@ -79,7 +79,7 @@ Package not found: "github-typo". Available: filesystem, github, notion-api
 
 ---
 
-### -32002: TOOL_NOT_FOUND
+### -33002: TOOL_NOT_FOUND
 
 The specified `tool_id` does not exist within the given package.
 
@@ -94,7 +94,7 @@ The specified `tool_id` does not exist within the given package.
 2. Verify you're using the correct package
 3. Check for case sensitivity in tool names
 
-**Related get_help:** `get_help(error_code: -32002)`
+**Related get_help:** `get_help(error_code: -33002)`
 
 **Example log message:**
 ```
@@ -103,7 +103,7 @@ Tool 'read_files' not found in package 'filesystem'. Did you mean 'read_file'?
 
 ---
 
-### -32003: ARG_VALIDATION_FAILED
+### -33003: ARG_VALIDATION_FAILED
 
 The arguments provided to a tool don't match its expected JSON schema.
 
@@ -126,7 +126,7 @@ The arguments provided to a tool don't match its expected JSON schema.
 3. Use `dry_run: true` with `use_tool` to validate arguments before execution
 4. If `repair_ticket.attempt >= 3`, ask the user for clarification before retrying
 
-**Related get_help:** `get_help(error_code: -32003)`
+**Related get_help:** `get_help(error_code: -33003)`
 
 **Example log message:**
 ```
@@ -154,7 +154,7 @@ Argument validation failed for tool 'write_file'. Missing required: content. Typ
 
 ---
 
-### -32004: PACKAGE_UNAVAILABLE
+### -33004: PACKAGE_UNAVAILABLE
 
 The package is configured but cannot establish a connection.
 
@@ -171,7 +171,7 @@ The package is configured but cannot establish a connection.
 3. For HTTP packages, check network connectivity
 4. Review configuration in `super-mcp-config.json`
 
-**Related get_help:** `get_help(error_code: -32004)`
+**Related get_help:** `get_help(error_code: -33004)`
 
 **Example log message:**
 ```
@@ -180,7 +180,7 @@ Package 'filesystem' unavailable: spawn ENOENT - command 'npx' not found
 
 ---
 
-### -32005: AUTH_REQUIRED
+### -33005: AUTH_REQUIRED
 
 The package requires authentication before tools can be used.
 
@@ -194,7 +194,7 @@ The package requires authentication before tools can be used.
 2. Complete the authorization in your browser
 3. Verify authentication with `health_check_all()`
 
-**Related get_help:** `get_help(error_code: -32005)`
+**Related get_help:** `get_help(error_code: -33005)`
 
 **Example log message:**
 ```
@@ -203,7 +203,7 @@ Package 'notion-api' requires authentication. Use authenticate(package_id: "noti
 
 ---
 
-### -32006: AUTH_INCOMPLETE
+### -33006: AUTH_INCOMPLETE
 
 OAuth authentication was started but not completed.
 
@@ -228,7 +228,7 @@ Authentication incomplete for 'github': OAuth callback not received within timeo
 
 ---
 
-### -32007: DOWNSTREAM_ERROR
+### -33007: DOWNSTREAM_ERROR
 
 The upstream MCP server returned an error during tool execution.
 
@@ -246,7 +246,7 @@ The upstream MCP server returned an error during tool execution.
 4. Check rate limits if making many requests
 5. Re-authenticate if tokens expired
 
-**Related get_help:** `get_help(error_code: -32007)`
+**Related get_help:** `get_help(error_code: -33007)`
 
 **Example log message:**
 ```
@@ -255,7 +255,7 @@ Downstream error from 'github': 403 Forbidden - Resource not accessible by integ
 
 ---
 
-### -32008: TOOL_BLOCKED
+### -33008: TOOL_BLOCKED
 
 The tool execution was blocked by the security policy.
 
@@ -311,7 +311,7 @@ The `get_help` tool provides contextual help for error codes directly in the MCP
 
 ```javascript
 // Get help for a specific error code
-get_help(error_code: -32003)
+get_help(error_code: -33003)
 
 // Get general error handling guidance
 get_help(topic: "error_handling")
@@ -334,7 +334,7 @@ When encountering errors, follow this diagnostic sequence:
    ```
 4. **Use `get_help`** for contextual guidance:
    ```javascript
-   get_help(error_code: -32003)  // For specific error
+   get_help(error_code: -33003)  // For specific error
    ```
 5. **Validate arguments** with dry run before retrying:
    ```javascript

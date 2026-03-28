@@ -568,7 +568,7 @@ get_help(topic: "getting_started")
 get_help(package_id: "github")
 
 // Get help for an error code
-get_help(error_code: -32003)
+get_help(error_code: -33003)
 ```
 
 ### Enhanced Error Messages
