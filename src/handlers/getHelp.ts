@@ -41,19 +41,23 @@ Super-MCP provides a unified interface to multiple MCP (Model Context Protocol) 
 
 ## Basic Workflow
 1. **Discover Packages**: Use \`list_tool_packages\` to see available MCP packages
-2. **Explore Tools**: Use \`list_tools\` with a package_id to discover tools in that package
-3. **Execute Tools**: Use \`use_tool\` to run a specific tool with appropriate arguments
+2. **Browse Tools**: Use \`list_tools(package_id: "...", detail: "lite")\` to see tool names and descriptions
+3. **Get Schemas**: Use \`get_tool_details(tool_ids: ["Package__tool_name"])\` to get full schemas before calling a tool
+4. **Execute Tools**: Use \`use_tool\` to run a specific tool with appropriate arguments
+5. **Search by Intent**: Use \`search_tools(query: "what you want to do")\` to find tools across all packages
 
 ## Example Flow
 \`\`\`
 1. list_tool_packages() → See all available packages
-2. list_tools(package_id: "filesystem") → See filesystem tools
-3. use_tool(package_id: "filesystem", tool_id: "read_file", args: {path: "/tmp/test.txt"})
+2. list_tools(package_id: "filesystem", detail: "lite") → Browse filesystem tools
+3. get_tool_details(tool_ids: ["filesystem__read_file"]) → Get full schema
+4. use_tool(package_id: "filesystem", tool_id: "read_file", args: {path: "/tmp/test.txt"})
 \`\`\`
 
 ## Tips
 - Always check package health with \`health_check_all\` if tools aren't working
-- Some packages require authentication - use \`authenticate\` when needed
+- Some packages require authentication — use \`authenticate\` when needed
+- Always call \`get_tool_details\` before using a tool for the first time — never guess argument names
 - Use \`dry_run: true\` in use_tool to validate arguments without executing`,
 
     workflow: `# Super-MCP Workflow Patterns
@@ -61,8 +65,9 @@ Super-MCP provides a unified interface to multiple MCP (Model Context Protocol) 
 ## Discovery Flow
 1. Start with \`list_tool_packages\` to understand available capabilities
 2. Note the package_id values for packages you want to use
-3. Use \`list_tools\` to explore each package's functionality
-4. Review the argument schemas carefully before using tools
+3. Use \`list_tools(package_id: "...", detail: "lite")\` to browse tools (names + descriptions)
+4. Use \`get_tool_details(tool_ids: ["Package__tool_name"])\` to get full schemas before using tools
+5. Or use \`search_tools(query: "...")\` to find tools by intent across all packages
 
 ## Common Patterns
 
@@ -85,7 +90,7 @@ Super-MCP provides a unified interface to multiple MCP (Model Context Protocol) 
 - If a tool fails, check the error message for guidance
 - Use \`get_help(error_code: <code>)\` for specific error help
 - Verify authentication status for API packages
-- Check argument types match the schema exactly`,
+- Use \`get_tool_details\` to review the exact schema before retrying`,
 
     authentication: `# Authentication in Super-MCP
 
@@ -119,13 +124,15 @@ Each package contains related tools:
 
 ## Using list_tools Effectively
 \`\`\`
-list_tools(package_id: "github", summarize: true)
-\`\`\`
+// Browse tools (names + descriptions only)
+list_tools(package_id: "github", detail: "lite")
 
-Returns:
-- Tool names and descriptions
-- Argument skeletons showing expected format
-- Schema hashes for validation
+// Get full schemas for specific tools
+get_tool_details(tool_ids: ["github__search_repositories", "github__get_repository"])
+
+// Or get everything at once (larger response)
+list_tools(package_id: "github", detail: "full")
+\`\`\`
 
 ## Reading Tool Schemas
 - Required fields are marked in the schema
@@ -134,8 +141,8 @@ Returns:
 - Look for format hints (uri, email, date)
 
 ## Tips
-- Start with summarize: true for readable format
-- Schemas are included by default; set include_schemas: false for lighter responses
+- Use \`detail: "lite"\` for browsing, \`get_tool_details\` for schemas before calling tools
+- Use \`search_tools\` when you know what you want to do but not which tool to use
 - Page through results if a package has many tools`,
 
     error_handling: `# Error Handling in Super-MCP
@@ -148,11 +155,11 @@ Returns:
 
 ### -32002: TOOL_NOT_FOUND
 - The tool_id doesn't exist in the specified package
-- Solution: Use \`list_tools(package_id)\` to see valid tool IDs
+- Solution: Use \`list_tools(package_id: "...", detail: "lite")\` to browse tools, or \`search_tools(query: "...")\` to find by intent
 
 ### -32003: ARG_VALIDATION_FAILED
 - Arguments don't match the tool's schema
-- Solution: Check the schema and ensure types match exactly
+- Solution: Use \`get_tool_details\` to review the exact schema, then fix your arguments
 - Use dry_run: true to test arguments
 
 ### -32004: PACKAGE_UNAVAILABLE
@@ -177,8 +184,8 @@ Returns:
 
 ## File Management Pattern
 \`\`\`
-1. list_tools(package_id: "filesystem")
-2. use_tool(package_id: "filesystem", tool_id: "list_directory", args: {path: "/tmp"})
+1. list_tools(package_id: "filesystem", detail: "lite")  // Browse tools
+2. get_tool_details(tool_ids: ["filesystem__read_file"])  // Get schema
 3. use_tool(package_id: "filesystem", tool_id: "read_file", args: {path: "/tmp/data.txt"})
 4. use_tool(package_id: "filesystem", tool_id: "write_file", args: {path: "/tmp/output.txt", content: "..."})
 \`\`\`
@@ -186,8 +193,9 @@ Returns:
 ## API Search Pattern
 \`\`\`
 1. authenticate(package_id: "github")  // If needed
-2. use_tool(package_id: "github", tool_id: "search_repositories", args: {query: "language:python"})
-3. use_tool(package_id: "github", tool_id: "get_repository", args: {owner: "...", repo: "..."})
+2. search_tools(query: "search github repositories")  // Find by intent
+3. get_tool_details(tool_ids: ["github__search_repositories"])  // Get schema
+4. use_tool(package_id: "github", tool_id: "search_repositories", args: {query: "language:python"})
 \`\`\`
 
 ## Data Processing Pattern
@@ -271,9 +279,9 @@ This error means the package_id you specified doesn't exist.
 The tool_id doesn't exist in the specified package.
 
 ## How to Fix
-1. Run \`list_tools(package_id: "your-package")\` 
-2. Find the correct tool_id from the response
-3. Use the exact tool name/id
+1. Run \`list_tools(package_id: "your-package", detail: "lite")\` to browse available tools
+2. Or use \`search_tools(query: "...")\` to find tools by intent
+3. Use the exact tool_id from the response
 
 ## Common Causes
 - Wrong package selected
@@ -285,11 +293,10 @@ The tool_id doesn't exist in the specified package.
 The arguments provided don't match the tool's expected schema.
 
 ## How to Fix
-1. Run \`list_tools(package_id: "...")\`
-2. Review the exact schema requirements
-3. Ensure all required fields are present
-4. Check that types match exactly (string vs number)
-5. Use \`dry_run: true\` to test
+1. Run \`get_tool_details(tool_ids: ["Package__tool_name"])\` to review the exact schema
+2. Ensure all required fields are present
+3. Check that types match exactly (string vs number)
+4. Use \`dry_run: true\` to test before executing
 
 ## Common Issues
 - Missing required fields
@@ -392,7 +399,7 @@ Run \`list_tool_packages()\` to see available packages.`;
 ## Available Tools (showing first 5 of ${toolCount})
 ${exampleTools}
 
-Use \`list_tools(package_id: "${packageId}")\` to see all tools.`;
+Use \`list_tools(package_id: "${packageId}", detail: "lite")\` to browse all tools.`;
       }
     } catch (error) {
       logger.debug("Could not load tools for help", { package_id: packageId });
@@ -427,10 +434,13 @@ ${authInfo}
 
 ## Usage Example
 \`\`\`
-// 1. List available tools
-list_tools(package_id: "${packageId}")
+// 1. Browse available tools
+list_tools(package_id: "${packageId}", detail: "lite")
 
-// 2. Execute a tool
+// 2. Get full schema for a specific tool
+get_tool_details(tool_ids: ["${packageId}__tool_name"])
+
+// 3. Execute the tool
 use_tool(
   package_id: "${packageId}",
   tool_id: "tool_name",
@@ -440,7 +450,7 @@ use_tool(
 
 ## Troubleshooting
 - If tools aren't working, check \`health_check_all()\`
-- Schemas are included by default: \`list_tools(package_id: "${packageId}")\`
+- Always use \`get_tool_details\` to review schemas before calling tools
 - Test arguments: Add \`dry_run: true\` to use_tool`;
 
   } catch (error) {

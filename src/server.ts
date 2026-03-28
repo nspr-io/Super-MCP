@@ -121,7 +121,7 @@ Optional: Use name_pattern to filter tools by glob pattern (matched against full
 
 Pattern is case-insensitive and matches the full tool name. Use * for any characters, ? for single character.
 
-Returns tool names, summaries, argument skeletons, and full JSON schemas by default. Set include_schemas=false for lighter responses.`,
+Use detail="lite" for lightweight browsing (names + descriptions only), or detail="full" for complete schemas ready to call. Use get_tool_details to hydrate specific tools by ID.`,
             inputSchema: {
               type: "object",
               properties: {
@@ -161,8 +161,8 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
               },
               required: ["package_id"],
               examples: [
-                { package_id: "filesystem", summarize: true },
-                { package_id: "github", page_size: 10 }
+                { package_id: "filesystem", detail: "lite" },
+                { package_id: "github", detail: "full", page_size: 10 }
               ],
             },
           },
@@ -184,7 +184,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
           },
           {
             name: "use_tool",
-            description: "Execute a specific tool from a package. First use list_tool_packages to find packages, then list_tools to discover tools and their arguments, then use this to execute. The args must match the tool's schema exactly.",
+            description: "Execute a specific tool from a package. First use list_tool_packages to find packages, then get_tool_details to get the schema, then use this to execute. The args must match the tool's schema exactly.",
             inputSchema: {
               type: "object",
               properties: {
@@ -443,7 +443,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
               helpfulMessage += ". Run 'list_tools(package_id: \"...\")' to see available tools.";
               break;
             case ERROR_CODES.ARG_VALIDATION_FAILED:
-              helpfulMessage += ". Use 'dry_run: true' to test arguments or 'get_help(error_code: -32003)' for detailed guidance.";
+              helpfulMessage += ". Use 'get_tool_details' to review the schema, or 'dry_run: true' to test arguments.";
               break;
             case ERROR_CODES.AUTH_REQUIRED:
               helpfulMessage += ". Run 'authenticate(package_id: \"...\")' to connect this package.";
@@ -452,7 +452,7 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
               helpfulMessage += ". Run 'health_check_all()' to diagnose the issue.";
               break;
             case ERROR_CODES.DOWNSTREAM_ERROR:
-              helpfulMessage += ". Check 'get_help(error_code: -32007)' for troubleshooting steps.";
+              helpfulMessage += ". Check the error details above. If the error persists, try 'restart_package(package_id: \"...\")' to reconnect.";
               break;
             case ERROR_CODES.TOOL_BLOCKED:
               helpfulMessage += ". This tool has been blocked by the security policy.";
