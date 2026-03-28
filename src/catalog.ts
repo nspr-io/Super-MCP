@@ -241,20 +241,11 @@ export class Catalog {
       summarize?: boolean;
       include_schemas?: boolean;
       include_descriptions?: boolean;
-      toolNameFilter?: (namespacedId: string) => boolean;
     } = {}
   ): Promise<ToolInfo[]> {
     const tools = await this.getPackageTools(packageId);
 
-    // Apply early filter if provided (performance optimization for name_pattern)
-    const filteredTools = options.toolNameFilter
-      ? tools.filter(ct => {
-          const namespacedId = `${packageId}__${ct.tool.name}`;
-          return options.toolNameFilter!(namespacedId);
-        })
-      : tools;
-
-    return filteredTools.map(cachedTool => {
+    return tools.map(cachedTool => {
       // Add namespace prefix to ensure global uniqueness across all packages
       // This prevents tool name collisions when multiple packages have identically named tools
       const namespacedId = `${packageId}__${cachedTool.tool.name}`;

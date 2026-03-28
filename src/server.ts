@@ -116,13 +116,6 @@ export async function startServer(options: {
 
 Use detail="lite" for lightweight browsing (names + descriptions only), detail="full" for complete schemas and argument skeletons.
 
-Optional: Use name_pattern to filter tools by glob pattern (matched against full tool name):
-- "*inbox*" - tools containing "inbox"
-- "get_*" - tools starting with "get_"
-- "*_list_*" - tools containing "_list_"
-
-Pattern is case-insensitive and matches the full tool name. Use * for any characters, ? for single character.
-
 Use detail="lite" for lightweight browsing (names + descriptions only), or detail="full" for complete schemas ready to call. Use get_tool_details to hydrate specific tools by ID.`,
             inputSchema: {
               type: "object",
@@ -131,10 +124,6 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
                   type: "string",
                   description: "Package ID from list_tool_packages (e.g., 'filesystem', 'github', 'notion-api')",
                   examples: ["filesystem", "github", "notion-api", "brave-search"],
-                },
-                name_pattern: {
-                  type: "string",
-                  description: "Glob pattern to filter tools by name. Use * for any characters, ? for single character. Pattern matches full tool name (case-insensitive). Examples: '*inbox*', 'get_*', '*_create_*'",
                 },
                 detail: {
                   type: "string",

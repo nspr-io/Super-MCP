@@ -51,8 +51,7 @@ function makeTool(name: string, opts: {
 
 /**
  * Create a mock Catalog that returns tools based on the options passed to buildToolInfos.
- * Simulates the real Catalog's behavior: omits fields when summarize/include_schemas are false,
- * and applies toolNameFilter when provided (matching real Catalog behavior).
+ * Simulates the real Catalog's behavior by omitting fields when summarize/include_schemas are false.
  */
 function createMockCatalog(tools: ReturnType<typeof makeTool>[]): Catalog {
   return {
@@ -60,15 +59,10 @@ function createMockCatalog(tools: ReturnType<typeof makeTool>[]): Catalog {
     getPackageStatus: vi.fn().mockReturnValue('ready'),
     getPackageError: vi.fn().mockReturnValue(undefined),
     buildToolInfos: vi.fn().mockImplementation((_pkgId: string, options: any = {}) => {
-      const { summarize = true, include_schemas = true, include_descriptions = false, toolNameFilter } = options;
-
-      // Apply early filter if provided (mirrors real Catalog behavior)
-      const filtered = toolNameFilter
-        ? tools.filter(t => toolNameFilter(t.name))
-        : tools;
+      const { summarize = true, include_schemas = true, include_descriptions = false } = options;
 
       return Promise.resolve(
-        filtered.map(t => ({
+        tools.map(t => ({
           package_id: t.package_id,
           tool_id: t.tool_id,
           name: t.name,
@@ -160,7 +154,6 @@ describe('handleListTools — detail parameter', () => {
       summarize: false,
       include_schemas: false,
       include_descriptions: true,
-      toolNameFilter: undefined,
     });
   });
 
@@ -192,7 +185,6 @@ describe('handleListTools — detail parameter', () => {
       summarize: true,
       include_schemas: true,
       include_descriptions: true,
-      toolNameFilter: undefined,
     });
   });
 
@@ -223,7 +215,6 @@ describe('handleListTools — detail parameter', () => {
       summarize: true,
       include_schemas: false,
       include_descriptions: true,
-      toolNameFilter: undefined,
     });
   });
 
@@ -254,7 +245,6 @@ describe('handleListTools — detail parameter', () => {
       summarize: false,
       include_schemas: false,
       include_descriptions: true,
-      toolNameFilter: undefined,
     });
   });
 
@@ -280,7 +270,6 @@ describe('handleListTools — detail parameter', () => {
       summarize: true,
       include_schemas: true,
       include_descriptions: true,
-      toolNameFilter: undefined,
     });
   });
 
@@ -385,226 +374,6 @@ describe('handleListTools — detail parameter', () => {
       summarize: true,
       include_schemas: true,
       include_descriptions: true,
-      toolNameFilter: undefined,
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// name_pattern early filtering tests
-// ---------------------------------------------------------------------------
-
-describe('handleListTools — name_pattern early filtering', () => {
-  const sampleTools = [
-    makeTool('send_email', { description: 'Send an email' }),
-    makeTool('read_inbox', { description: 'Read inbox messages' }),
-    makeTool('send_sms', { description: 'Send SMS' }),
-    makeTool('delete_draft', { description: 'Delete a draft' }),
-  ];
-
-  let catalog: Catalog;
-  let registry: PackageRegistry;
-
-  beforeEach(() => {
-    catalog = createMockCatalog(sampleTools);
-    registry = createMockRegistry();
-    mockSecurityPolicy.isToolBlocked.mockReturnValue({ blocked: false });
-    mockSecurityPolicy.isUserDisabled.mockReturnValue(false);
-    mockSecurityPolicy.isAdminDisabled.mockReturnValue(false);
-  });
-
-  it('name_pattern: "*send*" returns only tools matching the glob', async () => {
-    const result = await handleListTools(
-      { package_id: 'test-pkg', name_pattern: '*send*' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.tools).toHaveLength(2);
-
-    const names = parsed.tools.map((t: any) => t.name);
-    expect(names).toContain('test-pkg__send_email');
-    expect(names).toContain('test-pkg__send_sms');
-  });
-
-  it('name_pattern with no matches returns empty array', async () => {
-    const result = await handleListTools(
-      { package_id: 'test-pkg', name_pattern: '*nonexistent*' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.tools).toHaveLength(0);
-  });
-
-  it('name_pattern passes toolNameFilter to buildToolInfos', async () => {
-    await handleListTools(
-      { package_id: 'test-pkg', name_pattern: '*send*' },
-      catalog,
-      null,
-      registry,
-    );
-
-    // Verify buildToolInfos was called with a toolNameFilter function
-    expect(catalog.buildToolInfos).toHaveBeenCalledTimes(1);
-    const callArgs = (catalog.buildToolInfos as any).mock.calls[0];
-    expect(callArgs[0]).toBe('test-pkg');
-    expect(typeof callArgs[1].toolNameFilter).toBe('function');
-
-    // Verify the filter function works correctly
-    const filter = callArgs[1].toolNameFilter;
-    expect(filter('test-pkg__send_email')).toBe(true);
-    expect(filter('test-pkg__send_sms')).toBe(true);
-    expect(filter('test-pkg__read_inbox')).toBe(false);
-    expect(filter('test-pkg__delete_draft')).toBe(false);
-  });
-
-  it('no name_pattern passes toolNameFilter as undefined', async () => {
-    await handleListTools(
-      { package_id: 'test-pkg' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(catalog.buildToolInfos).toHaveBeenCalledWith('test-pkg', {
-      summarize: true,
-      include_schemas: true,
-      include_descriptions: true,
-      toolNameFilter: undefined,
-    });
-  });
-
-  it('name_pattern is case-insensitive', async () => {
-    const result = await handleListTools(
-      { package_id: 'test-pkg', name_pattern: '*SEND*' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.tools).toHaveLength(2);
-  });
-
-  it('name_pattern with ? wildcard matches single character', async () => {
-    const result = await handleListTools(
-      { package_id: 'test-pkg', name_pattern: 'test-pkg__send_???l' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-    // "send_email" has 5 chars after send_, not 3+l, so no match
-    // But let's test matching exactly: "test-pkg__send_e?ail" would match send_email
-    expect(parsed.tools).toHaveLength(0);
-  });
-
-  it('name_pattern exact match returns single tool', async () => {
-    const result = await handleListTools(
-      { package_id: 'test-pkg', name_pattern: 'test-pkg__send_email' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.tools).toHaveLength(1);
-    expect(parsed.tools[0].name).toBe('test-pkg__send_email');
-  });
-
-  it('name_pattern exceeding 200 chars throws INVALID_PARAMS', async () => {
-    const longPattern = '*' + 'a'.repeat(201);
-    await expect(
-      handleListTools(
-        { package_id: 'test-pkg', name_pattern: longPattern },
-        catalog,
-        null,
-        registry,
-      )
-    ).rejects.toMatchObject({
-      code: ERROR_CODES.INVALID_PARAMS,
-      message: expect.stringContaining('exceeds maximum length'),
-    });
-
-    // Should fail before calling buildToolInfos
-    expect(catalog.buildToolInfos).not.toHaveBeenCalled();
-  });
-
-  it('name_pattern validation happens before buildToolInfos call', async () => {
-    const longPattern = 'a'.repeat(201);
-    await expect(
-      handleListTools(
-        { package_id: 'test-pkg', name_pattern: longPattern },
-        catalog,
-        null,
-        registry,
-      )
-    ).rejects.toMatchObject({
-      code: ERROR_CODES.INVALID_PARAMS,
-    });
-
-    // ensurePackageLoaded should still be called (it's before the filter)
-    // but buildToolInfos should NOT be called
-    expect(catalog.buildToolInfos).not.toHaveBeenCalled();
-  });
-
-  it('name_pattern combined with detail: "lite" works correctly', async () => {
-    const result = await handleListTools(
-      { package_id: 'test-pkg', name_pattern: '*send*', detail: 'lite' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.tools).toHaveLength(2);
-
-    // Verify lite mode fields
-    for (const tool of parsed.tools) {
-      expect(tool.description).toBeTruthy();
-      expect(tool.schema).toBeUndefined();
-      expect(tool.args_skeleton).toBeUndefined();
-    }
-  });
-
-  it('security annotations are applied to name_pattern-filtered results', async () => {
-    mockSecurityPolicy.isToolBlocked.mockImplementation((_pkgId: string, toolId: string) => {
-      if (toolId === 'send_email') {
-        return { blocked: true, reason: 'Blocked by security policy' };
-      }
-      return { blocked: false };
-    });
-
-    const result = await handleListTools(
-      { package_id: 'test-pkg', name_pattern: '*send*' },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.tools).toHaveLength(2);
-
-    const blocked = parsed.tools.find((t: any) => t.name === 'test-pkg__send_email');
-    expect(blocked.blocked).toBe(true);
-    expect(blocked.blocked_reason).toBe('Blocked by security policy');
-
-    const normal = parsed.tools.find((t: any) => t.name === 'test-pkg__send_sms');
-    expect(normal.blocked).toBeUndefined();
-
-    mockSecurityPolicy.isToolBlocked.mockReturnValue({ blocked: false });
   });
 });

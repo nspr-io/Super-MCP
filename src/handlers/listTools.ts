@@ -3,34 +3,6 @@ import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
 import { computeSecurityAnnotation, extractRawToolId } from "./annotateToolSecurity.js";
 
-/**
- * Build a regex from a glob-style name_pattern for tool name matching.
- * Validates the pattern and converts glob wildcards (* → .*, ? → .) to regex.
- * Throws INVALID_PARAMS for invalid patterns.
- */
-function buildNamePatternRegex(namePattern: string): RegExp {
-  if (typeof namePattern !== 'string') {
-    throw {
-      code: ERROR_CODES.INVALID_PARAMS,
-      message: "name_pattern must be a string",
-    };
-  }
-  if (namePattern.length > 200) {
-    throw {
-      code: ERROR_CODES.INVALID_PARAMS,
-      message: "name_pattern exceeds maximum length of 200 characters",
-    };
-  }
-  // 1. Collapse consecutive wildcards to prevent ReDoS
-  const collapsed = namePattern.replace(/\*+/g, '*');
-  // 2. Escape special regex chars
-  const escaped = collapsed.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  // 3. Convert glob wildcards: * -> .*, ? -> .
-  const regexStr = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
-  // 4. Anchor for full-string match, case-insensitive
-  return new RegExp(`^${regexStr}$`, 'i');
-}
-
 export async function handleListTools(
   input: ListToolsInput,
   catalog: Catalog,
@@ -39,7 +11,6 @@ export async function handleListTools(
 ): Promise<any> {
   const {
     package_id,
-    name_pattern,
     detail,
     summarize = true,
     include_schemas = true,
@@ -86,19 +57,10 @@ export async function handleListTools(
     };
   }
 
-  // Build name filter BEFORE buildToolInfos for early filtering (performance optimization)
-  // This avoids building ToolInfo objects and annotating security for non-matching tools
-  let toolNameFilter: ((namespacedId: string) => boolean) | undefined;
-  if (name_pattern) {
-    const regex = buildNamePatternRegex(name_pattern);
-    toolNameFilter = (namespacedId: string) => regex.test(namespacedId);
-  }
-
   const toolInfos = await catalog.buildToolInfos(package_id, {
     summarize: effectiveSummarize,
     include_schemas: effectiveIncludeSchemas,
     include_descriptions: true,
-    toolNameFilter,
   });
 
   // Annotate tools with security blocked status
