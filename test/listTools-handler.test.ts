@@ -189,42 +189,12 @@ describe('handleListTools — detail parameter', () => {
   });
 
   // -----------------------------------------------------------------------
-  // detail not provided — backward compatibility with old boolean params
+  // detail drives response shape
   // -----------------------------------------------------------------------
 
-  it('no detail + summarize: true, include_schemas: false → backward-compatible (has summary, no schema)', async () => {
+  it('detail: "lite" returns lite tool info', async () => {
     const result = await handleListTools(
-      { package_id: 'test-pkg', summarize: true, include_schemas: false },
-      catalog,
-      null,
-      registry,
-    );
-
-    expect(result.isError).toBe(false);
-    const parsed = JSON.parse(result.content[0].text);
-
-    for (const tool of parsed.tools) {
-      expect(tool.description).toBeTruthy();
-      expect(tool.summary).toBeTruthy();
-      expect(tool.args_skeleton).toBeDefined();
-      expect(tool.schema).toBeUndefined();
-    }
-
-    // Verify the old params were passed through directly (include_descriptions always true)
-    expect(catalog.buildToolInfos).toHaveBeenCalledWith('test-pkg', {
-      summarize: true,
-      include_schemas: false,
-      include_descriptions: true,
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // detail overrides old booleans when both provided
-  // -----------------------------------------------------------------------
-
-  it('detail: "lite" overrides summarize: true, include_schemas: true', async () => {
-    const result = await handleListTools(
-      { package_id: 'test-pkg', detail: 'lite', summarize: true, include_schemas: true },
+      { package_id: 'test-pkg', detail: 'lite' },
       catalog,
       null,
       registry,
@@ -240,7 +210,6 @@ describe('handleListTools — detail parameter', () => {
       expect(tool.description).toBeTruthy();
     }
 
-    // detail: "lite" should override the booleans
     expect(catalog.buildToolInfos).toHaveBeenCalledWith('test-pkg', {
       summarize: false,
       include_schemas: false,
@@ -248,9 +217,9 @@ describe('handleListTools — detail parameter', () => {
     });
   });
 
-  it('detail: "full" overrides summarize: false, include_schemas: false', async () => {
+  it('detail: "full" returns full tool info', async () => {
     const result = await handleListTools(
-      { package_id: 'test-pkg', detail: 'full', summarize: false, include_schemas: false },
+      { package_id: 'test-pkg', detail: 'full' },
       catalog,
       null,
       registry,
@@ -265,7 +234,6 @@ describe('handleListTools — detail parameter', () => {
       expect(tool.schema).toBeDefined();
     }
 
-    // detail: "full" should override the booleans
     expect(catalog.buildToolInfos).toHaveBeenCalledWith('test-pkg', {
       summarize: true,
       include_schemas: true,
@@ -361,7 +329,7 @@ describe('handleListTools — detail parameter', () => {
   // Default behavior when no params are provided at all
   // -----------------------------------------------------------------------
 
-  it('defaults (no detail, no booleans) use summarize=true, include_schemas=true', async () => {
+  it('defaults to detail: "full" when detail is omitted', async () => {
     const result = await handleListTools(
       { package_id: 'test-pkg' },
       catalog,
@@ -370,6 +338,15 @@ describe('handleListTools — detail parameter', () => {
     );
 
     expect(result.isError).toBe(false);
+    const parsed = JSON.parse(result.content[0].text);
+
+    for (const tool of parsed.tools) {
+      expect(tool.summary).toBeTruthy();
+      expect(tool.args_skeleton).toBeDefined();
+      expect(tool.schema).toBeDefined();
+      expect(tool.description).toBeTruthy();
+    }
+
     expect(catalog.buildToolInfos).toHaveBeenCalledWith('test-pkg', {
       summarize: true,
       include_schemas: true,

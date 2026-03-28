@@ -155,11 +155,7 @@ export interface ListToolPackagesOutput {
 
 export interface ListToolsInput {
   package_id: string;
-  detail?: "lite" | "full";  // When provided, overrides summarize/include_schemas
-  /** @deprecated Use `detail: "lite"` or `detail: "full"` instead. */
-  summarize?: boolean;
-  /** @deprecated Use `detail: "lite"` or `detail: "full"` instead. */
-  include_schemas?: boolean;
+  detail?: "lite" | "full";
   page_size?: number;
   page_token?: string | null;
 }

@@ -128,19 +128,7 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
                 detail: {
                   type: "string",
                   enum: ["lite", "full"],
-                  description: "Response detail level. 'lite' returns tool names and descriptions only (for browsing). 'full' returns names, descriptions, argument skeletons, and full JSON schemas (for ready-to-call). When provided, overrides 'summarize' and 'include_schemas'.",
-                },
-                summarize: {
-                  type: "boolean",
-                  description: "Deprecated: use 'detail' parameter instead. Include summaries and argument skeletons showing expected format.",
-                  default: true,
-                  deprecated: true,
-                },
-                include_schemas: {
-                  type: "boolean",
-                  description: "Deprecated: use 'detail' parameter instead. Include full JSON schemas for tool arguments.",
-                  default: true,
-                  deprecated: true,
+                  description: "Response detail level. 'lite' returns tool names and descriptions only (for browsing). 'full' returns names, descriptions, argument skeletons, and full JSON schemas (for ready-to-call).",
                 },
                 page_size: {
                   type: "number",

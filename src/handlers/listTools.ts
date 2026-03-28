@@ -11,33 +11,20 @@ export async function handleListTools(
 ): Promise<any> {
   const {
     package_id,
-    detail,
-    summarize = true,
-    include_schemas = true,
+    detail = "full",
     page_size = 20,
     page_token,
   } = input;
 
-  // Resolve detail parameter to effective boolean flags
-  // detail takes precedence over individual params when provided
-  let effectiveSummarize = summarize;
-  let effectiveIncludeSchemas = include_schemas;
-
-  if (detail !== undefined) {
-    if (detail !== "lite" && detail !== "full") {
-      throw {
-        code: ERROR_CODES.INVALID_PARAMS,
-        message: `Invalid detail value: "${detail}". Must be "lite" or "full".`,
-      };
-    }
-    if (detail === "lite") {
-      effectiveSummarize = false;
-      effectiveIncludeSchemas = false;
-    } else {
-      effectiveSummarize = true;
-      effectiveIncludeSchemas = true;
-    }
+  if (detail !== "lite" && detail !== "full") {
+    throw {
+      code: ERROR_CODES.INVALID_PARAMS,
+      message: `Invalid detail value: "${detail}". Must be "lite" or "full".`,
+    };
   }
+
+  const effectiveSummarize = detail === "full";
+  const effectiveIncludeSchemas = detail === "full";
 
   await catalog.ensurePackageLoaded(package_id);
   const packageStatus = catalog.getPackageStatus(package_id);
