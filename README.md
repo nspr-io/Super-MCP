@@ -7,11 +7,15 @@ A local MCP router that aggregates multiple MCPs into a single interface for Cla
 Super MCP Router allows you to configure multiple MCP servers (both local stdio and hosted HTTP) and access them through a single unified interface with these meta-tools:
 
 - `list_tool_packages` - List available MCP packages and discover their capabilities
-- `list_tools` - List tools in a specific package with schemas and examples
+- `list_tools` - Browse tools in a package (use `detail:"lite"` for names + descriptions, `detail:"full"` for complete schemas)
+- `get_tool_details` - Get full schema for specific tools before first use
 - `use_tool` - Execute a tool from any package
+- `search_tools` - BM25 keyword search across all available tools
 - `get_help` - Get detailed guidance on using Super-MCP effectively
 - `authenticate` - Start OAuth authentication for packages that require it
 - `health_check_all` - Check the operational status of all configured packages
+- `health_check` - Check the status of a specific package
+- `restart_package` - Hot-reload a package's credentials without restarting Super-MCP
 
 ## Documentation
 

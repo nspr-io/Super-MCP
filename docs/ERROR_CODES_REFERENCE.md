@@ -44,7 +44,7 @@ Standard JSON-RPC error indicating the request parameters are malformed or missi
 **Solutions:**
 1. Check that all required parameters are present
 2. Verify parameter types match the expected schema
-3. Review the tool's input schema via `list_tools`
+3. Review the tool's input schema via `get_tool_details`
 
 **Related get_help:** `get_help(topic: "workflow")`
 
@@ -90,7 +90,7 @@ The specified `tool_id` does not exist within the given package.
 - Case sensitivity issues
 
 **Solutions:**
-1. Run `list_tools(package_id: "your-package")` to see available tools
+1. Run `list_tools(package_id: "your-package")` to browse available tools, then `get_tool_details(tool_ids: ["your-package__tool-name"])` for full schema
 2. Verify you're using the correct package
 3. Check for case sensitivity in tool names
 

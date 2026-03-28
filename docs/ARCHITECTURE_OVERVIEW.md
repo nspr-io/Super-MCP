@@ -19,8 +19,10 @@ High-level overview of Super-MCP's component architecture and request flow.
 │                     Super-MCP Router                         │
 ├─────────────────────────────────────────────────────────────┤
 │  server.ts          │  Meta-tools: list_tool_packages,      │
-│  (MCP Server)       │  list_tools, use_tool, get_help,      │
-│                     │  authenticate, health_check_all        │
+│  (MCP Server)       │  list_tools, get_tool_details,        │
+│                     │  use_tool, search_tools, get_help,     │
+│                     │  authenticate, health_check_all,       │
+│                     │  health_check, restart_package         │
 ├─────────────────────┼───────────────────────────────────────┤
 │  registry.ts        │  Config loading, package management,   │
 │  (PackageRegistry)  │  client lifecycle, connection caching  │
@@ -128,4 +130,4 @@ Update this document when:
 
 ---
 
-*Last updated: 2025-12-12*
+*Last updated: 2026-03-28*

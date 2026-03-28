@@ -5,6 +5,21 @@ All notable changes to Super MCP Router will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-03-28
+
+### Added
+- **Progressive disclosure API**: `list_tools` now supports `detail:"lite"|"full"` parameter for controlling response verbosity. `detail:"lite"` returns tool names and descriptions only; `detail:"full"` includes complete schemas
+- **get_tool_details meta-tool**: New dedicated tool for fetching full schemas of specific tools before first use, replacing the old `include_schemas`/`name_pattern` pattern
+- **Multi-field BM25 weighting**: search_tools now weights name (3x), summary (2x), params (1x) for better relevance
+
+### Changed
+- **Error code migration**: Custom error codes moved from -32xxx to -33xxx range to avoid collision with MCP SDK reserved codes (e.g., RequestTimeout = -32001)
+- `summarize` and `include_schemas` parameters on `list_tools` are now deprecated (still functional for backward compatibility). Use `detail:"lite"|"full"` instead
+- `annotateToolSecurity` refactored to `computeSecurityAnnotation` — shape-agnostic, eliminates duplication across 4 call sites
+
+### Removed
+- Dead code: `summarizeTool()` and `categorizeTools()` functions
+
 ## [2.4.0] - 2025-12-27
 
 ### Added
@@ -61,7 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `logBlockedAttempts`: Control logging of blocked access attempts
 - Pattern matching support: exact strings or regex patterns (`"/.*delete.*/i"`)
 - Security status shown in `list_tools` output (blocked tools marked with reason)
-- New error code `TOOL_BLOCKED` (-32008) for security policy violations
+- New error code `TOOL_BLOCKED` (-33008) for security policy violations
 
 ### Changed
 - Major codebase refactoring for improved maintainability
