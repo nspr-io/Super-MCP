@@ -1,65 +1,52 @@
-import { ToolInfo } from "../types.js";
-import { PackageRegistry } from "../registry.js";
 import { getSecurityPolicy } from "../security.js";
 
+export interface SecurityAnnotation {
+  blocked?: boolean;
+  blocked_reason?: string;
+  user_disabled?: boolean;
+  admin_disabled?: boolean;
+}
+
 /**
- * Annotate a ToolInfo with security blocked status, admin-disabled, and user-disabled status.
- * Shared between handleListTools and handleGetToolDetails.
- *
+ * Compute security annotation for a tool.
+ * Shape-agnostic: returns only security fields to spread onto any output type.
  * Precedence: security-blocked > admin-disabled > user-disabled.
  */
-export function annotateToolSecurity(
-  tool: ToolInfo,
+export function computeSecurityAnnotation(
   packageId: string,
-  registry: PackageRegistry
-): ToolInfo {
+  catalogId: string | undefined,
+  rawToolId: string,
+): SecurityAnnotation {
   const securityPolicy = getSecurityPolicy();
-  const packageConfig = registry.getPackage(packageId);
-  const catalogId = packageConfig?.catalogId;
-
-  // Extract the raw tool name (without package prefix) for checking
-  const rawToolId = tool.tool_id.includes('__')
-    ? tool.tool_id.slice(tool.tool_id.indexOf('__') + 2)
-    : tool.tool_id;
-
-  // Check security policy first (takes precedence)
   const blockCheck = securityPolicy.isToolBlocked(packageId, rawToolId);
 
-  // Check admin-disabled status (takes precedence over user-disabled)
-  const isAdminDisabled = securityPolicy.isAdminDisabled(catalogId, rawToolId);
-
-  // Check user-disabled status (separate from security policy)
-  const isUserDisabled = securityPolicy.isUserDisabled(packageId, rawToolId);
-
-  // Security-blocked takes highest precedence
   if (blockCheck.blocked) {
-    return {
-      ...tool,
-      blocked: true,
-      blocked_reason: blockCheck.reason,
-      // Do NOT set user_disabled or admin_disabled for security-blocked tools
-    };
+    return { blocked: true, blocked_reason: blockCheck.reason };
   }
 
-  // Admin-disabled takes precedence over user-disabled
-  if (isAdminDisabled) {
+  if (securityPolicy.isAdminDisabled(catalogId, rawToolId)) {
     return {
-      ...tool,
       blocked: true,
       blocked_reason: "Disabled by your organization's administrator",
       admin_disabled: true,
     };
   }
 
-  // User-disabled: set both blocked and user_disabled
-  if (isUserDisabled) {
+  if (securityPolicy.isUserDisabled(packageId, rawToolId)) {
     return {
-      ...tool,
       blocked: true,
       blocked_reason: "Disabled by user",
       user_disabled: true,
     };
   }
 
-  return tool;
+  return {};
+}
+
+/**
+ * Extract the raw tool name by stripping the package prefix (everything before first `__`).
+ */
+export function extractRawToolId(toolId: string): string {
+  const idx = toolId.indexOf('__');
+  return idx >= 0 ? toolId.slice(idx + 2) : toolId;
 }

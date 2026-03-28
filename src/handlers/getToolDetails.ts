@@ -1,7 +1,7 @@
 import { ERROR_CODES, ToolInfo } from "../types.js";
 import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
-import { annotateToolSecurity } from "./annotateToolSecurity.js";
+import { computeSecurityAnnotation } from "./annotateToolSecurity.js";
 import { getLogger } from "../logging.js";
 
 const logger = getLogger();
@@ -107,8 +107,9 @@ export async function handleGetToolDetails(
           schema: cachedTool.tool.inputSchema,
         };
 
-        const annotated = annotateToolSecurity(toolInfo, packageId, registry);
-        resultMap.set(req.toolId, annotated);
+        const catalogId = registry.getPackage(packageId)?.catalogId;
+        const annotation = computeSecurityAnnotation(packageId, catalogId, req.rawName);
+        resultMap.set(req.toolId, { ...toolInfo, ...annotation });
       }
     } catch (err) {
       for (const req of toolRequests) {

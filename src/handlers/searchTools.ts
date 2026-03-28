@@ -1,7 +1,7 @@
 import { ERROR_CODES, ToolInfo } from "../types.js";
 import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
-import { getSecurityPolicy } from "../security.js";
+import { computeSecurityAnnotation, extractRawToolId } from "./annotateToolSecurity.js";
 import { getLogger } from "../logging.js";
 // @ts-expect-error - wink-bm25-text-search doesn't have type definitions
 import bm25Constructor from "wink-bm25-text-search";
@@ -126,14 +126,10 @@ export async function handleSearchTools(
   // Search with BM25
   const searchResults = engine.search(query, Math.min(limit * 2, 50));
 
-  // Get security policy for blocking check
-  const securityPolicy = getSecurityPolicy();
-
   // Build results with relevance scores
   const results: Array<ToolInfo & { relevance_score: number }> = [];
   let maxScore = 0;
 
-  // First pass to find max score for normalization
   for (const [, score] of searchResults) {
     if (score > maxScore) maxScore = score;
   }
@@ -142,55 +138,22 @@ export async function handleSearchTools(
     const tool = toolMap.get(toolId);
     if (!tool) continue;
 
-    // Filter by package if specified
     if (packages && packages.length > 0) {
       if (!packages.includes(tool.package_id!)) continue;
     }
 
-    // Normalize score to 0-1 range
     const normalizedScore = maxScore > 0 ? rawScore / maxScore : 0;
     if (normalizedScore < threshold) continue;
 
-    // Check if tool is blocked by security, admin-disabled, or user-disabled
-    const rawToolId = toolId.includes("__")
-      ? toolId.split("__").slice(1).join("__")
-      : toolId;
-    const blockCheck = securityPolicy.isToolBlocked(tool.package_id!, rawToolId);
+    const rawToolId = extractRawToolId(toolId);
     const packageConfig = registry.getPackage(tool.package_id!);
-    const isAdminDisabled = securityPolicy.isAdminDisabled(packageConfig?.catalogId, rawToolId);
-    const isUserDisabled = securityPolicy.isUserDisabled(tool.package_id!, rawToolId);
+    const annotation = computeSecurityAnnotation(tool.package_id!, packageConfig?.catalogId, rawToolId);
 
-    // Build result with appropriate blocked/userDisabled/adminDisabled flags
-    // Precedence: security-blocked > admin-disabled > user-disabled
-    if (blockCheck.blocked) {
-      results.push({
-        ...tool,
-        relevance_score: Math.round(normalizedScore * 100) / 100,
-        blocked: true,
-        blocked_reason: blockCheck.reason,
-      });
-    } else if (isAdminDisabled) {
-      results.push({
-        ...tool,
-        relevance_score: Math.round(normalizedScore * 100) / 100,
-        blocked: true,
-        blocked_reason: "Disabled by your organization's administrator",
-        admin_disabled: true,
-      });
-    } else if (isUserDisabled) {
-      results.push({
-        ...tool,
-        relevance_score: Math.round(normalizedScore * 100) / 100,
-        blocked: true,
-        blocked_reason: "Disabled by user",
-        user_disabled: true,
-      });
-    } else {
-      results.push({
-        ...tool,
-        relevance_score: Math.round(normalizedScore * 100) / 100,
-      });
-    }
+    results.push({
+      ...tool,
+      relevance_score: Math.round(normalizedScore * 100) / 100,
+      ...annotation,
+    });
 
     if (results.length >= limit) break;
   }

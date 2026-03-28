@@ -9,4 +9,5 @@ export { handleGetHelp, getTopicHelp, getErrorHelp, getPackageHelp } from "./get
 export { handleRestartPackage } from "./restartPackage.js";
 export { handleSearchTools, invalidateSearchCache } from "./searchTools.js";
 export { handleReadResource } from "./readResource.js";
-export { annotateToolSecurity } from "./annotateToolSecurity.js";
+export { computeSecurityAnnotation, extractRawToolId } from "./annotateToolSecurity.js";
+export type { SecurityAnnotation } from "./annotateToolSecurity.js";

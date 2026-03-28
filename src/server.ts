@@ -24,6 +24,8 @@ import {
   handleRestartPackage,
   handleSearchTools,
   handleReadResource,
+  computeSecurityAnnotation,
+  extractRawToolId,
 } from "./handlers/index.js";
 import { formatError } from "./utils/formatError.js";
 
@@ -141,13 +143,15 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
                 },
                 summarize: {
                   type: "boolean",
-                  description: "Include summaries and argument skeletons showing expected format",
+                  description: "Deprecated: use 'detail' parameter instead. Include summaries and argument skeletons showing expected format.",
                   default: true,
+                  deprecated: true,
                 },
                 include_schemas: {
                   type: "boolean",
-                  description: "Include full JSON schemas for tool arguments (enabled by default; set false for lighter responses)",
+                  description: "Deprecated: use 'detail' parameter instead. Include full JSON schemas for tool arguments.",
                   default: true,
+                  deprecated: true,
                 },
                 page_size: {
                   type: "number",
@@ -554,7 +558,6 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
       // Also includes user-disabled status for tools
       app.get("/api/tools", async (_req, res) => {
         try {
-          const securityPolicy = getSecurityPolicy();
           type ToolEntry = {
             package_id: string;
             package_name: string;
@@ -584,45 +587,16 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
                     include_descriptions: true,
                   });
 
-                  const packageTools: ToolEntry[] = [];
-                  for (const tool of tools) {
-                    // Extract raw tool name for checking
-                    const rawToolId = tool.tool_id.includes('__')
-                      ? tool.tool_id.split('__').slice(1).join('__')
-                      : tool.tool_id;
-
-                    // Check security policy
-                    const blockCheck = securityPolicy.isToolBlocked(pkg.id, rawToolId);
-                    const isAdminDisabled = securityPolicy.isAdminDisabled(pkg.catalogId, rawToolId);
-                    const isUserDisabled = securityPolicy.isUserDisabled(pkg.id, rawToolId);
-
-                    const toolEntry: ToolEntry = {
-                      package_id: pkg.id,
-                      package_name: pkg.name || pkg.id,
-                      tool_id: tool.tool_id,
-                      name: tool.name,
-                      description: tool.description || tool.summary || "",
-                      summary: tool.summary,
-                      input_schema: tool.schema,
-                    };
-
-                    // Precedence: security-blocked > admin-disabled > user-disabled
-                    if (blockCheck.blocked) {
-                      toolEntry.blocked = true;
-                      toolEntry.blocked_reason = blockCheck.reason;
-                    } else if (isAdminDisabled) {
-                      toolEntry.blocked = true;
-                      toolEntry.blocked_reason = "Disabled by your organization's administrator";
-                      toolEntry.admin_disabled = true;
-                    } else if (isUserDisabled) {
-                      toolEntry.blocked = true;
-                      toolEntry.blocked_reason = "Disabled by user";
-                      toolEntry.user_disabled = true;
-                    }
-
-                    packageTools.push(toolEntry);
-                  }
-                  return packageTools;
+                  return tools.map(tool => ({
+                    package_id: pkg.id,
+                    package_name: pkg.name || pkg.id,
+                    tool_id: tool.tool_id,
+                    name: tool.name,
+                    description: tool.description || tool.summary || "",
+                    summary: tool.summary,
+                    input_schema: tool.schema,
+                    ...computeSecurityAnnotation(pkg.id, pkg.catalogId, extractRawToolId(tool.tool_id)),
+                  }));
                 } catch (pkgError) {
                   logger.warn("Failed to load tools for package", {
                     package_id: pkg.id,
@@ -639,6 +613,7 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
 
           // Include user-disabled and admin-disabled hashes in ETag to invalidate cache when they change
           // Use content hash (not just count) so swapping disabled tools invalidates cache
+          const securityPolicy = getSecurityPolicy();
           const userDisabledSummary = securityPolicy.getUserDisabledSummary();
           const userDisabledHash = securityPolicy.getUserDisabledHash();
           const adminDisabledSummary = securityPolicy.getAdminDisabledSummary();

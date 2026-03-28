@@ -1,7 +1,7 @@
 import { ListToolsInput, ListToolsOutput, ERROR_CODES, ToolInfo } from "../types.js";
 import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
-import { annotateToolSecurity } from "./annotateToolSecurity.js";
+import { computeSecurityAnnotation, extractRawToolId } from "./annotateToolSecurity.js";
 
 /**
  * Build a regex from a glob-style name_pattern for tool name matching.
@@ -101,10 +101,12 @@ export async function handleListTools(
     toolNameFilter,
   });
 
-  // Annotate tools with security blocked status, admin-disabled, and user-disabled status
-  const tools: ToolInfo[] = toolInfos.map(tool =>
-    annotateToolSecurity(tool, package_id, registry!)
-  );
+  // Annotate tools with security blocked status
+  const catalogId = registry?.getPackage(package_id)?.catalogId;
+  const tools: ToolInfo[] = toolInfos.map(tool => ({
+    ...tool,
+    ...computeSecurityAnnotation(package_id, catalogId, extractRawToolId(tool.tool_id)),
+  }));
 
   const startIndex = page_token ? 
     Math.max(0, parseInt(Buffer.from(page_token, 'base64').toString('utf8'))) : 0;

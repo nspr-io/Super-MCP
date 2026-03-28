@@ -157,7 +157,9 @@ export interface ListToolsInput {
   package_id: string;
   name_pattern?: string;  // Glob pattern: "*inbox*", "get_*", "*_list_*"
   detail?: "lite" | "full";  // When provided, overrides summarize/include_schemas
+  /** @deprecated Use `detail: "lite"` or `detail: "full"` instead. */
   summarize?: boolean;
+  /** @deprecated Use `detail: "lite"` or `detail: "full"` instead. */
   include_schemas?: boolean;
   page_size?: number;
   page_token?: string | null;
