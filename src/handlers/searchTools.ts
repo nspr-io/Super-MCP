@@ -58,7 +58,7 @@ async function buildBM25Index(
   const startTime = Date.now();
 
   const engine = (bm25Constructor as () => BM25Engine)();
-  engine.defineConfig({ fldWeights: { content: 1 } });
+  engine.defineConfig({ fldWeights: { name: 3, summary: 2, params: 1 } });
   engine.definePrepTasks([tokenize]);
 
   const toolMap = new Map<string, ToolInfo>();
@@ -72,13 +72,16 @@ async function buildBM25Index(
       });
 
       for (const tool of tools) {
-        // Build searchable content from name, summary, and parameter names
-        const paramNames = tool.schema?.properties
-          ? Object.keys(tool.schema.properties).join(" ")
-          : "";
-        const content = `${tool.name} ${tool.summary || ""} ${paramNames}`;
+        const paramNames = Object.keys(tool.schema?.properties || {}).join(" ");
 
-        engine.addDoc({ content }, tool.tool_id);
+        engine.addDoc(
+          {
+            name: tool.name,
+            summary: tool.summary || "",
+            params: paramNames,
+          },
+          tool.tool_id
+        );
         toolMap.set(tool.tool_id, {
           ...tool,
           package_id: pkg.id,
