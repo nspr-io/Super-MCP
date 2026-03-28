@@ -15,6 +15,7 @@ import { getSecurityPolicy } from "./security.js";
 import {
   handleListToolPackages,
   handleListTools,
+  handleGetToolDetails,
   handleUseTool,
   handleHealthCheckAll,
   handleHealthCheckPackage,
@@ -111,6 +112,8 @@ export async function startServer(options: {
             name: "list_tools",
             description: `Explore tools within a specific package. Use the package_id from list_tool_packages.
 
+Use detail="lite" for lightweight browsing (names + descriptions only), detail="full" for complete schemas and argument skeletons.
+
 Optional: Use name_pattern to filter tools by glob pattern (matched against full tool name):
 - "*inbox*" - tools containing "inbox"
 - "get_*" - tools starting with "get_"
@@ -130,6 +133,11 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
                 name_pattern: {
                   type: "string",
                   description: "Glob pattern to filter tools by name. Use * for any characters, ? for single character. Pattern matches full tool name (case-insensitive). Examples: '*inbox*', 'get_*', '*_create_*'",
+                },
+                detail: {
+                  type: "string",
+                  enum: ["lite", "full"],
+                  description: "Response detail level. 'lite' returns tool names and descriptions only (for browsing). 'full' returns names, descriptions, argument skeletons, and full JSON schemas (for ready-to-call). When provided, overrides 'summarize' and 'include_schemas'.",
                 },
                 summarize: {
                   type: "boolean",
@@ -156,6 +164,22 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
                 { package_id: "filesystem", summarize: true },
                 { package_id: "github", page_size: 10 }
               ],
+            },
+          },
+          {
+            name: "get_tool_details",
+            description: "Get full details and schemas for specific tools by ID. Use this to hydrate tool schemas before calling use_tool. Accepts up to 10 tool IDs at once. Always call this before using a tool for the first time.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                tool_ids: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "Array of namespaced tool IDs (e.g., ['GoogleWorkspace__send_email', 'Slack__post_message']). Max 10.",
+                  maxItems: 10,
+                },
+              },
+              required: ["tool_ids"],
             },
           },
           {
@@ -370,6 +394,9 @@ Returns tool names, summaries, argument skeletons, and full JSON schemas by defa
 
           case "list_tools":
             return await handleListTools(args as any, catalog, validator, registry);
+
+          case "get_tool_details":
+            return await handleGetToolDetails(args as any, catalog, registry);
 
           case "use_tool":
             return await handleUseTool(args as any, registry, catalog, validator);

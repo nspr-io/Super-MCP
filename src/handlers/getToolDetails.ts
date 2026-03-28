@@ -1,0 +1,162 @@
+import { ERROR_CODES, ToolInfo } from "../types.js";
+import { Catalog } from "../catalog.js";
+import { PackageRegistry } from "../registry.js";
+import { annotateToolSecurity } from "./annotateToolSecurity.js";
+import { getLogger } from "../logging.js";
+
+const logger = getLogger();
+
+interface GetToolDetailsInput {
+  tool_ids: string[];
+}
+
+export async function handleGetToolDetails(
+  input: GetToolDetailsInput,
+  catalog: Catalog,
+  registry: PackageRegistry
+): Promise<any> {
+  const { tool_ids } = input;
+
+  // Validate input
+  if (!Array.isArray(tool_ids) || tool_ids.length === 0) {
+    throw {
+      code: ERROR_CODES.INVALID_PARAMS,
+      message: "tool_ids must be a non-empty array of tool ID strings.",
+    };
+  }
+  if (tool_ids.length > 10) {
+    throw {
+      code: ERROR_CODES.INVALID_PARAMS,
+      message: `tool_ids exceeds maximum of 10 items (got ${tool_ids.length}).`,
+    };
+  }
+  // Validate each tool_id is a non-empty string
+  for (const id of tool_ids) {
+    if (typeof id !== 'string' || id.trim().length === 0) {
+      throw {
+        code: ERROR_CODES.INVALID_PARAMS,
+        message: "Each tool_id must be a non-empty string.",
+      };
+    }
+  }
+
+  // Group by package_id for efficiency
+  const byPackage = new Map<string, Array<{ toolId: string; rawName: string }>>();
+  for (const toolId of tool_ids) {
+    const sepIndex = toolId.indexOf('__');
+    if (sepIndex < 0) {
+      // No separator — can't determine package
+      // Will be handled as not_found below
+      continue;
+    }
+    const packageId = toolId.slice(0, sepIndex);
+    const rawName = toolId.slice(sepIndex + 2);
+    if (!byPackage.has(packageId)) {
+      byPackage.set(packageId, []);
+    }
+    byPackage.get(packageId)!.push({ toolId, rawName });
+  }
+
+  // Resolve each tool into a map (keyed by tool_id) for input-order output
+  type ResultEntry = ToolInfo & { not_found?: boolean; error?: string };
+  const resultMap = new Map<string, ResultEntry>();
+
+  for (const [packageId, toolRequests] of byPackage) {
+    try {
+      await catalog.ensurePackageLoaded(packageId);
+      const packageStatus = catalog.getPackageStatus(packageId);
+
+      if (packageStatus === "auth_required" || packageStatus === "error") {
+        for (const req of toolRequests) {
+          const reason = packageStatus === "auth_required"
+            ? `Package '${packageId}' requires authentication.`
+            : `Package '${packageId}' is unavailable: ${catalog.getPackageError(packageId) || 'unknown error'}`;
+          resultMap.set(req.toolId, {
+            package_id: packageId,
+            tool_id: req.toolId,
+            name: req.toolId,
+            schema_hash: "",
+            error: "package_unavailable",
+            description: reason,
+          });
+        }
+        continue;
+      }
+
+      for (const req of toolRequests) {
+        const cachedTool = await catalog.getTool(packageId, req.rawName);
+        if (!cachedTool) {
+          resultMap.set(req.toolId, {
+            package_id: packageId,
+            tool_id: req.toolId,
+            name: req.toolId,
+            schema_hash: "",
+            not_found: true,
+          });
+          continue;
+        }
+
+        const toolInfo: ToolInfo = {
+          package_id: packageId,
+          tool_id: req.toolId,
+          name: req.toolId,
+          description: cachedTool.tool.description,
+          summary: cachedTool.summary,
+          args_skeleton: cachedTool.argsSkeleton,
+          schema_hash: cachedTool.schemaHash,
+          schema: cachedTool.tool.inputSchema,
+        };
+
+        const annotated = annotateToolSecurity(toolInfo, packageId, registry);
+        resultMap.set(req.toolId, annotated);
+      }
+    } catch (err) {
+      for (const req of toolRequests) {
+        if (!resultMap.has(req.toolId)) {
+          resultMap.set(req.toolId, {
+            package_id: packageId,
+            tool_id: req.toolId,
+            name: req.toolId,
+            schema_hash: "",
+            error: "package_unavailable",
+            description: `Failed to load package '${packageId}'.`,
+          });
+        }
+      }
+    }
+  }
+
+  // Handle tool_ids with no '__' separator
+  for (const toolId of tool_ids) {
+    if (!resultMap.has(toolId)) {
+      resultMap.set(toolId, {
+        package_id: "",
+        tool_id: toolId,
+        name: toolId,
+        schema_hash: "",
+        not_found: true,
+        description: `Invalid tool ID format: expected 'package__tool_name'.`,
+      });
+    }
+  }
+
+  // Return results in input order
+  const results = tool_ids.map(id => resultMap.get(id)!);
+
+  logger.info("get_tool_details resolved", {
+    requested: tool_ids.length,
+    found: results.filter(r => !r.not_found && !r.error).length,
+    not_found: results.filter(r => r.not_found).length,
+    errors: results.filter(r => r.error).length,
+  });
+
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({ tools: results }, null, 2),
+      },
+    ],
+    isError: false,
+  };
+}

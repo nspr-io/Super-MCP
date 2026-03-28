@@ -1,7 +1,35 @@
 import { ListToolsInput, ListToolsOutput, ERROR_CODES, ToolInfo } from "../types.js";
 import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
-import { getSecurityPolicy } from "../security.js";
+import { annotateToolSecurity } from "./annotateToolSecurity.js";
+
+/**
+ * Build a regex from a glob-style name_pattern for tool name matching.
+ * Validates the pattern and converts glob wildcards (* → .*, ? → .) to regex.
+ * Throws INVALID_PARAMS for invalid patterns.
+ */
+function buildNamePatternRegex(namePattern: string): RegExp {
+  if (typeof namePattern !== 'string') {
+    throw {
+      code: ERROR_CODES.INVALID_PARAMS,
+      message: "name_pattern must be a string",
+    };
+  }
+  if (namePattern.length > 200) {
+    throw {
+      code: ERROR_CODES.INVALID_PARAMS,
+      message: "name_pattern exceeds maximum length of 200 characters",
+    };
+  }
+  // 1. Collapse consecutive wildcards to prevent ReDoS
+  const collapsed = namePattern.replace(/\*+/g, '*');
+  // 2. Escape special regex chars
+  const escaped = collapsed.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  // 3. Convert glob wildcards: * -> .*, ? -> .
+  const regexStr = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
+  // 4. Anchor for full-string match, case-insensitive
+  return new RegExp(`^${regexStr}$`, 'i');
+}
 
 export async function handleListTools(
   input: ListToolsInput,
@@ -12,11 +40,33 @@ export async function handleListTools(
   const {
     package_id,
     name_pattern,
+    detail,
     summarize = true,
     include_schemas = true,
     page_size = 20,
     page_token,
   } = input;
+
+  // Resolve detail parameter to effective boolean flags
+  // detail takes precedence over individual params when provided
+  let effectiveSummarize = summarize;
+  let effectiveIncludeSchemas = include_schemas;
+
+  if (detail !== undefined) {
+    if (detail !== "lite" && detail !== "full") {
+      throw {
+        code: ERROR_CODES.INVALID_PARAMS,
+        message: `Invalid detail value: "${detail}". Must be "lite" or "full".`,
+      };
+    }
+    if (detail === "lite") {
+      effectiveSummarize = false;
+      effectiveIncludeSchemas = false;
+    } else {
+      effectiveSummarize = true;
+      effectiveIncludeSchemas = true;
+    }
+  }
 
   await catalog.ensurePackageLoaded(package_id);
   const packageStatus = catalog.getPackageStatus(package_id);
@@ -36,91 +86,25 @@ export async function handleListTools(
     };
   }
 
+  // Build name filter BEFORE buildToolInfos for early filtering (performance optimization)
+  // This avoids building ToolInfo objects and annotating security for non-matching tools
+  let toolNameFilter: ((namespacedId: string) => boolean) | undefined;
+  if (name_pattern) {
+    const regex = buildNamePatternRegex(name_pattern);
+    toolNameFilter = (namespacedId: string) => regex.test(namespacedId);
+  }
+
   const toolInfos = await catalog.buildToolInfos(package_id, {
-    summarize,
-    include_schemas,
+    summarize: effectiveSummarize,
+    include_schemas: effectiveIncludeSchemas,
+    include_descriptions: true,
+    toolNameFilter,
   });
 
   // Annotate tools with security blocked status, admin-disabled, and user-disabled status
-  const securityPolicy = getSecurityPolicy();
-  const packageConfig = registry?.getPackage(package_id);
-  const catalogId = packageConfig?.catalogId;
-  const annotatedTools: ToolInfo[] = toolInfos.map(tool => {
-    // Extract the raw tool name (without package prefix) for checking
-    const rawToolId = tool.tool_id.includes('__') 
-      ? tool.tool_id.split('__').slice(1).join('__')
-      : tool.tool_id;
-    
-    // Check security policy first (takes precedence)
-    const blockCheck = securityPolicy.isToolBlocked(package_id, rawToolId);
-    
-    // Check admin-disabled status (takes precedence over user-disabled)
-    const isAdminDisabled = securityPolicy.isAdminDisabled(catalogId, rawToolId);
-    
-    // Check user-disabled status (separate from security policy)
-    const isUserDisabled = securityPolicy.isUserDisabled(package_id, rawToolId);
-    
-    // Security-blocked takes highest precedence
-    if (blockCheck.blocked) {
-      return {
-        ...tool,
-        blocked: true,
-        blocked_reason: blockCheck.reason,
-        // Do NOT set user_disabled or admin_disabled for security-blocked tools
-      };
-    }
-    
-    // Admin-disabled takes precedence over user-disabled
-    if (isAdminDisabled) {
-      return {
-        ...tool,
-        blocked: true,
-        blocked_reason: "Disabled by your organization's administrator",
-        admin_disabled: true,
-      };
-    }
-    
-    // User-disabled: set both blocked and user_disabled
-    if (isUserDisabled) {
-      return {
-        ...tool,
-        blocked: true,
-        blocked_reason: "Disabled by user",
-        user_disabled: true,
-      };
-    }
-    
-    return tool;
-  });
-
-  // Apply name_pattern filter if provided
-  let tools = annotatedTools;
-  if (name_pattern) {
-    // Validate pattern
-    if (typeof name_pattern !== 'string') {
-      throw {
-        code: ERROR_CODES.INVALID_PARAMS,
-        message: "name_pattern must be a string",
-      };
-    }
-    if (name_pattern.length > 200) {
-      throw {
-        code: ERROR_CODES.INVALID_PARAMS,
-        message: "name_pattern exceeds maximum length of 200 characters",
-      };
-    }
-    
-    // Convert glob to regex with anchoring for full-string match
-    // 1. Collapse consecutive wildcards to prevent ReDoS
-    // 2. Escape special regex chars
-    // 3. Convert glob wildcards: * -> .*, ? -> .
-    // 4. Anchor for full-string match
-    const collapsed = name_pattern.replace(/\*+/g, '*');
-    const escaped = collapsed.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-    const regexStr = escaped.replace(/\*/g, '.*').replace(/\?/g, '.');
-    const regex = new RegExp(`^${regexStr}$`, 'i');
-    tools = tools.filter(t => regex.test(t.name) || regex.test(t.tool_id));
-  }
+  const tools: ToolInfo[] = toolInfos.map(tool =>
+    annotateToolSecurity(tool, package_id, registry!)
+  );
 
   const startIndex = page_token ? 
     Math.max(0, parseInt(Buffer.from(page_token, 'base64').toString('utf8'))) : 0;

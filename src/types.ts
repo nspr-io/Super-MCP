@@ -156,6 +156,7 @@ export interface ListToolPackagesOutput {
 export interface ListToolsInput {
   package_id: string;
   name_pattern?: string;  // Glob pattern: "*inbox*", "get_*", "*_list_*"
+  detail?: "lite" | "full";  // When provided, overrides summarize/include_schemas
   summarize?: boolean;
   include_schemas?: boolean;
   page_size?: number;
@@ -165,6 +166,10 @@ export interface ListToolsInput {
 export interface ListToolsOutput {
   tools: ToolInfo[];
   next_page_token?: string | null;
+}
+
+export interface GetToolDetailsInput {
+  tool_ids: string[];
 }
 
 export interface UseToolInput {

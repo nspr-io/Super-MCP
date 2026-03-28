@@ -1,5 +1,6 @@
 export { handleListToolPackages } from "./listToolPackages.js";
 export { handleListTools } from "./listTools.js";
+export { handleGetToolDetails } from "./getToolDetails.js";
 export { handleUseTool } from "./useTool.js";
 export { handleHealthCheckAll } from "./healthCheck.js";
 export { handleHealthCheckPackage } from "./healthCheckPackage.js";
@@ -8,3 +9,4 @@ export { handleGetHelp, getTopicHelp, getErrorHelp, getPackageHelp } from "./get
 export { handleRestartPackage } from "./restartPackage.js";
 export { handleSearchTools, invalidateSearchCache } from "./searchTools.js";
 export { handleReadResource } from "./readResource.js";
+export { annotateToolSecurity } from "./annotateToolSecurity.js";

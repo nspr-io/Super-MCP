@@ -1,6 +1,6 @@
 import { ToolInfo, PackageConfig } from "./types.js";
 import { PackageRegistry } from "./registry.js";
-import { summarizeTool, argsSkeleton, summarizePackage, createSchemaHash } from "./summarize.js";
+import { argsSkeleton, summarizePackage, createSchemaHash } from "./summarize.js";
 import { getLogger } from "./logging.js";
 
 const logger = getLogger();
@@ -78,7 +78,7 @@ export class Catalog {
       const cachedTools: CachedTool[] = tools.map(tool => ({
         packageId,
         tool,
-        summary: summarizeTool(tool),
+        summary: tool.description || `${tool.name} tool`,
         argsSkeleton: argsSkeleton(tool.inputSchema),
         schemaHash: createSchemaHash(tool.inputSchema),
       }));
@@ -241,11 +241,20 @@ export class Catalog {
       summarize?: boolean;
       include_schemas?: boolean;
       include_descriptions?: boolean;
+      toolNameFilter?: (namespacedId: string) => boolean;
     } = {}
   ): Promise<ToolInfo[]> {
     const tools = await this.getPackageTools(packageId);
 
-    return tools.map(cachedTool => {
+    // Apply early filter if provided (performance optimization for name_pattern)
+    const filteredTools = options.toolNameFilter
+      ? tools.filter(ct => {
+          const namespacedId = `${packageId}__${ct.tool.name}`;
+          return options.toolNameFilter!(namespacedId);
+        })
+      : tools;
+
+    return filteredTools.map(cachedTool => {
       // Add namespace prefix to ensure global uniqueness across all packages
       // This prevents tool name collisions when multiple packages have identically named tools
       const namespacedId = `${packageId}__${cachedTool.tool.name}`;
