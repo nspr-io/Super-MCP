@@ -90,7 +90,7 @@ function handleContinuation(
   return { content: [{ type: "text", text }], isError: false };
 }
 const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
-const DEFAULT_MAX_OUTPUT_CHARS = 20_000;
+const DEFAULT_MAX_OUTPUT_CHARS = 100_000;
 const MAX_SCHEMA_FRAGMENTS = 5;
 const FULL_SCHEMA_FRAGMENT_KEY = "__full_schema";
 const STOP_RETRYING_MESSAGE = "Arguments may require user clarification. Please ask the user for specifics.";
