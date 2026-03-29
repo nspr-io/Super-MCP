@@ -188,7 +188,7 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
           },
           {
             name: "use_tool",
-            description: "Execute a specific tool from a package. First use list_tool_packages to find packages, then get_tool_details to get the schema, then use this to execute. The args must match the tool's schema exactly.",
+            description: "Execute a specific tool from a package. First use list_tool_packages to find packages, then get_tool_details to get the schema, then use this to execute. The args must match the tool's schema exactly, including casing and underscores.",
             inputSchema: {
               type: "object",
               properties: {
@@ -204,7 +204,7 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
                 },
                 args: {
                   type: "object",
-                  description: "Tool-specific arguments matching the schema from list_tools",
+                  description: "Tool-specific arguments matching the schema from get_tool_details or list_tools",
                   examples: [
                     { path: "/Users/example/file.txt" },
                     { query: "language:python stars:>100" }
