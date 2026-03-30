@@ -3,6 +3,7 @@ import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
 import { computeSecurityAnnotation } from "./annotateToolSecurity.js";
 import { getLogger } from "../logging.js";
+import { coerceStringifiedJson } from "../utils/normalizeInput.js";
 
 const logger = getLogger();
 
@@ -15,7 +16,11 @@ export async function handleGetToolDetails(
   catalog: Catalog,
   registry: PackageRegistry
 ): Promise<any> {
-  const { tool_ids } = input;
+  // Normalize tool_ids that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865
+  // Safety: coercion returns a parsed array on success, or the original value unchanged
+  // on failure — in which case the Array.isArray check below catches the type mismatch.
+  const tool_ids = coerceStringifiedJson<string[]>(input.tool_ids, "array", { handler: "get_tool_details", field: "tool_ids" }) as string[];
 
   // Validate input
   if (!Array.isArray(tool_ids) || tool_ids.length === 0) {

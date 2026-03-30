@@ -7,6 +7,7 @@ import { McpError, ErrorCode as SdkErrorCode } from "@modelcontextprotocol/sdk/t
 import { getLogger } from "../logging.js";
 import { getSecurityPolicy } from "../security.js";
 import { findBestMatch } from "../utils/fuzzyMatch.js";
+import { coerceStringifiedJson, coerceStringifiedBoolean } from "../utils/normalizeInput.js";
 
 const logger = getLogger();
 
@@ -480,6 +481,13 @@ export async function handleUseTool(
   const { _rebel_staged, _rebel_staged_message, ...cleanInput } = input;
 
   let { package_id, tool_id, args, dry_run = false, max_output_chars } = cleanInput;
+
+  // Normalize inputs that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865, docs/investigations/260330_slow_turn_brute_force_search.md
+  // Safety: coercion returns the properly-typed value on success, or the original value
+  // unchanged on failure — in which case downstream validation catches the type mismatch.
+  args = coerceStringifiedJson(args, "object", { handler: "use_tool", field: "args", package_id, tool_id }) as typeof args;
+  dry_run = coerceStringifiedBoolean(dry_run, { handler: "use_tool", field: "dry_run" }) as typeof dry_run;
 
   // Handle namespaced tool IDs for backward compatibility and Claude Code subagent support
   // Tool IDs now follow the format: "PackageName__tool_name"
