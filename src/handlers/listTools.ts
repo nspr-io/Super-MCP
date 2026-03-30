@@ -2,6 +2,7 @@ import { ListToolsInput, ListToolsOutput, ERROR_CODES, ToolInfo } from "../types
 import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
 import { computeSecurityAnnotation, extractRawToolId } from "./annotateToolSecurity.js";
+import { coerceStringifiedNumber } from "../utils/normalizeInput.js";
 
 export async function handleListTools(
   input: ListToolsInput,
@@ -9,12 +10,16 @@ export async function handleListTools(
   _validator: any,
   registry?: PackageRegistry
 ): Promise<any> {
-  const {
+  let {
     package_id,
     detail = "full",
     page_size = 20,
     page_token,
   } = input;
+
+  // Normalize inputs that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865
+  page_size = coerceStringifiedNumber(page_size, { handler: "list_tools", field: "page_size" }) as typeof page_size;
 
   if (detail !== "lite" && detail !== "full") {
     throw {

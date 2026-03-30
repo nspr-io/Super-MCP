@@ -2,6 +2,7 @@ import { PackageRegistry } from "../registry.js";
 import { Catalog } from "../catalog.js";
 import { PackageConfig } from "../types.js";
 import { getLogger } from "../logging.js";
+import { coerceStringifiedBoolean } from "../utils/normalizeInput.js";
 
 const logger = getLogger();
 
@@ -44,7 +45,11 @@ export async function handleHealthCheckAll(
   registry: PackageRegistry,
   catalog: Catalog
 ): Promise<any> {
-  const { detailed = false } = input;
+  let { detailed = false } = input;
+
+  // Normalize inputs that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865
+  detailed = coerceStringifiedBoolean(detailed, { handler: "health_check_all", field: "detailed" }) as typeof detailed;
 
   logger.info("Performing health check on all packages");
 

@@ -3,6 +3,7 @@ import { Catalog } from "../catalog.js";
 import { PackageRegistry } from "../registry.js";
 import { computeSecurityAnnotation, extractRawToolId } from "./annotateToolSecurity.js";
 import { getLogger } from "../logging.js";
+import { coerceStringifiedJson, coerceStringifiedNumber } from "../utils/normalizeInput.js";
 // @ts-expect-error - wink-bm25-text-search doesn't have type definitions
 import bm25Constructor from "wink-bm25-text-search";
 
@@ -115,7 +116,13 @@ export async function handleSearchTools(
   registry: PackageRegistry,
   catalog: Catalog
 ): Promise<any> {
-  const { query, limit = 5, threshold = 0.0, packages } = input;
+  let { query, limit = 5, threshold = 0.0, packages } = input;
+
+  // Normalize inputs that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865
+  limit = coerceStringifiedNumber(limit, { handler: "search_tools", field: "limit" }) as typeof limit;
+  threshold = coerceStringifiedNumber(threshold, { handler: "search_tools", field: "threshold" }) as typeof threshold;
+  packages = coerceStringifiedJson<string[]>(packages, "array", { handler: "search_tools", field: "packages" }) as typeof packages;
 
   if (!query || query.trim().length === 0) {
     throw {

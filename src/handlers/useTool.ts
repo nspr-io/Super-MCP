@@ -7,7 +7,7 @@ import { McpError, ErrorCode as SdkErrorCode } from "@modelcontextprotocol/sdk/t
 import { getLogger } from "../logging.js";
 import { getSecurityPolicy } from "../security.js";
 import { findBestMatch } from "../utils/fuzzyMatch.js";
-import { coerceStringifiedJson, coerceStringifiedBoolean } from "../utils/normalizeInput.js";
+import { coerceStringifiedJson, coerceStringifiedBoolean, coerceStringifiedNumber } from "../utils/normalizeInput.js";
 
 const logger = getLogger();
 
@@ -470,6 +470,18 @@ export async function handleUseTool(
 
   // Continuation: retrieve cached truncated result (before any validation/security)
   const { _rebel_staged: _, _rebel_staged_message: __, ...cleanForContinuation } = input;
+  if (cleanForContinuation.output_offset !== undefined) {
+    cleanForContinuation.output_offset = coerceStringifiedNumber(cleanForContinuation.output_offset, {
+      handler: "use_tool",
+      field: "output_offset",
+    }) as typeof cleanForContinuation.output_offset;
+  }
+  if (cleanForContinuation.max_output_chars !== undefined) {
+    cleanForContinuation.max_output_chars = coerceStringifiedNumber(cleanForContinuation.max_output_chars, {
+      handler: "use_tool",
+      field: "max_output_chars",
+    }) as typeof cleanForContinuation.max_output_chars;
+  }
   if (cleanForContinuation.result_id) {
     if (cleanForContinuation.output_offset === undefined || cleanForContinuation.output_offset === null) {
       return { content: [{ type: "text", text: "Error: output_offset is required when using result_id." }], isError: true };
@@ -488,6 +500,10 @@ export async function handleUseTool(
   // unchanged on failure — in which case downstream validation catches the type mismatch.
   args = coerceStringifiedJson(args, "object", { handler: "use_tool", field: "args", package_id, tool_id }) as typeof args;
   dry_run = coerceStringifiedBoolean(dry_run, { handler: "use_tool", field: "dry_run" }) as typeof dry_run;
+  max_output_chars = coerceStringifiedNumber(max_output_chars, {
+    handler: "use_tool",
+    field: "max_output_chars",
+  }) as typeof max_output_chars;
 
   // Handle namespaced tool IDs for backward compatibility and Claude Code subagent support
   // Tool IDs now follow the format: "PackageName__tool_name"

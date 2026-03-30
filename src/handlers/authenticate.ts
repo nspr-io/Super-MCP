@@ -4,6 +4,7 @@ import { getLogger } from "../logging.js";
 import { findAvailablePort, checkPortAvailable } from "../utils/portFinder.js";
 import { SimpleOAuthProvider } from "../auth/providers/simple.js";
 import { formatError } from "../utils/formatError.js";
+import { coerceStringifiedBoolean } from "../utils/normalizeInput.js";
 
 const logger = getLogger();
 
@@ -12,7 +13,15 @@ export async function handleAuthenticate(
   registry: PackageRegistry,
   catalog: Catalog
 ): Promise<any> {
-  const { package_id, wait_for_completion = true, force = false } = input;
+  let { package_id, wait_for_completion = true, force = false } = input;
+
+  // Normalize inputs that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865
+  wait_for_completion = coerceStringifiedBoolean(wait_for_completion, {
+    handler: "authenticate",
+    field: "wait_for_completion",
+  }) as typeof wait_for_completion;
+  force = coerceStringifiedBoolean(force, { handler: "authenticate", field: "force" }) as typeof force;
   
   logger.info("=== AUTHENTICATE START ===", { 
     package_id,

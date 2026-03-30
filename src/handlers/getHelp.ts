@@ -1,6 +1,7 @@
 import { PackageRegistry } from "../registry.js";
 import { Catalog } from "../catalog.js";
 import { getLogger } from "../logging.js";
+import { coerceStringifiedNumber } from "../utils/normalizeInput.js";
 
 const logger = getLogger();
 
@@ -8,7 +9,11 @@ export async function handleGetHelp(
   input: { topic?: string; package_id?: string; error_code?: number },
   registry: PackageRegistry
 ): Promise<any> {
-  const { topic = "getting_started", package_id, error_code } = input;
+  let { topic = "getting_started", package_id, error_code } = input;
+
+  // Normalize inputs that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865
+  error_code = coerceStringifiedNumber(error_code, { handler: "get_help", field: "error_code" }) as typeof error_code;
 
   let helpContent = "";
 

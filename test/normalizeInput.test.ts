@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { coerceStringifiedJson, coerceStringifiedBoolean } from '../src/utils/normalizeInput.js';
+import { coerceStringifiedJson, coerceStringifiedBoolean, coerceStringifiedNumber } from '../src/utils/normalizeInput.js';
 
 vi.mock('../src/logging.js', () => ({
   getLogger: () => ({
@@ -94,5 +94,53 @@ describe('coerceStringifiedBoolean', () => {
     expect(coerceStringifiedBoolean(0, ctx)).toBe(0);
     expect(coerceStringifiedBoolean(null, ctx)).toBe(null);
     expect(coerceStringifiedBoolean(undefined, ctx)).toBe(undefined);
+  });
+});
+
+describe('coerceStringifiedNumber', () => {
+  it('returns number as-is when already a number', () => {
+    expect(coerceStringifiedNumber(42, ctx)).toBe(42);
+  });
+
+  it('coerces "42" to 42', () => {
+    expect(coerceStringifiedNumber('42', ctx)).toBe(42);
+  });
+
+  it('coerces "0" to 0', () => {
+    expect(coerceStringifiedNumber('0', ctx)).toBe(0);
+  });
+
+  it('coerces "3.14" to 3.14', () => {
+    expect(coerceStringifiedNumber('3.14', ctx)).toBe(3.14);
+  });
+
+  it('coerces "-5" to -5', () => {
+    expect(coerceStringifiedNumber('-5', ctx)).toBe(-5);
+  });
+
+  it('returns empty string unchanged', () => {
+    expect(coerceStringifiedNumber('', ctx)).toBe('');
+  });
+
+  it('returns whitespace-only string unchanged', () => {
+    expect(coerceStringifiedNumber('   ', ctx)).toBe('   ');
+  });
+
+  it('returns non-numeric strings unchanged', () => {
+    expect(coerceStringifiedNumber('hello', ctx)).toBe('hello');
+  });
+
+  it('returns "NaN" unchanged', () => {
+    expect(coerceStringifiedNumber('NaN', ctx)).toBe('NaN');
+  });
+
+  it('returns "Infinity" unchanged', () => {
+    expect(coerceStringifiedNumber('Infinity', ctx)).toBe('Infinity');
+  });
+
+  it('returns non-string non-number values unchanged', () => {
+    expect(coerceStringifiedNumber(null, ctx)).toBe(null);
+    expect(coerceStringifiedNumber(undefined, ctx)).toBe(undefined);
+    expect(coerceStringifiedNumber(true, ctx)).toBe(true);
   });
 });

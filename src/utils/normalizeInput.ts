@@ -72,3 +72,23 @@ export function coerceStringifiedBoolean(
   }
   return value;
 }
+
+/**
+ * Coerce numeric strings to numbers. Returns the original value if it's already
+ * a number, not a string, empty/whitespace-only, or does not parse to a finite
+ * number.
+ */
+export function coerceStringifiedNumber(
+  value: unknown,
+  context: { handler: string; field: string },
+): number | unknown {
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return value;
+  if (value.trim() === "") return value;
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return value;
+
+  logger.warn("Coerced stringified number (upstream model bug)", context);
+  return parsed;
+}

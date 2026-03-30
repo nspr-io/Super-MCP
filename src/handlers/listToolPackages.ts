@@ -1,6 +1,7 @@
 import { ListToolPackagesInput, ListToolPackagesOutput, PackageConfig } from "../types.js";
 import { PackageRegistry } from "../registry.js";
 import { Catalog } from "../catalog.js";
+import { coerceStringifiedBoolean, coerceStringifiedNumber } from "../utils/normalizeInput.js";
 
 // Limit concurrent package loading to avoid spawning too many MCP processes at once
 const PACKAGE_LOAD_CONCURRENCY = 5;
@@ -40,7 +41,16 @@ export async function handleListToolPackages(
   registry: PackageRegistry,
   catalog: Catalog
 ): Promise<any> {
-  const { safe_only = true, limit = 100, include_health = true } = input;
+  let { safe_only = true, limit = 100, include_health = true } = input;
+
+  // Normalize inputs that the model may have stringified (upstream Claude model bug).
+  // See: anthropics/claude-code#25865
+  safe_only = coerceStringifiedBoolean(safe_only, { handler: "list_tool_packages", field: "safe_only" }) as typeof safe_only;
+  limit = coerceStringifiedNumber(limit, { handler: "list_tool_packages", field: "limit" }) as typeof limit;
+  include_health = coerceStringifiedBoolean(include_health, {
+    handler: "list_tool_packages",
+    field: "include_health",
+  }) as typeof include_health;
 
   const packages = registry.getPackages({ safe_only }).slice(0, limit);
   
