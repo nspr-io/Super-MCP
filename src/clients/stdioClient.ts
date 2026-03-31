@@ -152,6 +152,17 @@ export class StdioMcpClient implements McpClient {
       args: this.config.args,
     });
 
+    // Workaround: MCP SDK gates windowsHide on isElectron() which checks
+    // 'type' in process. Super-MCP runs as plain Node.js (not Electron),
+    // so child processes get visible console windows on Windows.
+    // Temporarily set process.type so the SDK sets windowsHide: true.
+    // TODO: Remove when @modelcontextprotocol/sdk exposes windowsHide as a parameter
+    // or unconditionally sets it on Windows. Tracked upstream.
+    const needsWindowsHideFix = process.platform === 'win32' && !('type' in process);
+    if (needsWindowsHideFix) {
+      (process as any).type = 'utility';
+    }
+
     try {
       // Create the transport
       // Let the SDK handle environment variable merging with safe defaults
@@ -222,6 +233,10 @@ export class StdioMcpClient implements McpClient {
       (enhancedError as any).originalError = error;
       (enhancedError as any).packageId = this.packageId;
       throw enhancedError;
+    } finally {
+      if (needsWindowsHideFix) {
+        delete (process as any).type;
+      }
     }
   }
 
