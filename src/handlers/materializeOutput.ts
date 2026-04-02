@@ -137,12 +137,15 @@ export async function materializeOutput(
     return null; // Fallback to continuation
   }
 
+  const relativePath = `.rebel/tool-outputs/${filename}`;
+
   logger.info("Materialization successful", {
     event: 'materialization_success',
     package_id,
     tool_id,
     size_chars,
-    file_path: filePath
+    file_path: filePath,
+    relative_path: relativePath
   });
 
   const preview = fileContent.slice(0, 2048);
@@ -150,8 +153,8 @@ export async function materializeOutput(
 
   const result = {
     status: "materialized",
-    message: `Full output from ${tool_id} (${size_chars.toLocaleString()} chars, ~${estimated_tokens.toLocaleString()} tokens) saved to ${filePath}. Use the Read tool (with offset/limit for targeted sections) or Grep tool (to search for specific content) to work with this file.`,
-    file_path: filePath,
+    message: `Full output (${size_chars.toLocaleString()} chars) saved to workspace file: ${relativePath}. Use the Read tool (with offset/limit for targeted sections) or Grep tool (to search for specific content) to explore.`,
+    file_path: relativePath,
     size_chars: size_chars,
     estimated_tokens: estimated_tokens,
     preview: preview,

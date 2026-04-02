@@ -29,11 +29,11 @@ describe("materializeOutput", () => {
     expect(result?.package_id).toBe("pkg1");
     expect(result?.tool_id).toBe("tool1");
     expect(result?.result.status).toBe("materialized");
-    expect(result?.result.file_path).toContain(path.join(".rebel", "tool-outputs"));
+    expect(result?.result.file_path).toContain(".rebel/tool-outputs");
     expect(result?.result.size_chars).toBeGreaterThan(150_000); // Because of frontmatter
     expect(result?.result.message).toContain(result!.result.file_path);
 
-    const content = await fs.readFile(result!.result.file_path as string, "utf8");
+    const content = await fs.readFile(path.join(tempWorkspace, result!.result.file_path as string), "utf8");
     expect(content).toContain(text);
   });
 
@@ -50,7 +50,7 @@ describe("materializeOutput", () => {
     expect(result).not.toBeNull();
     expect(result?.result.file_path).toMatch(/\.json$/);
 
-    const content = await fs.readFile(result!.result.file_path as string, "utf8");
+    const content = await fs.readFile(path.join(tempWorkspace, result!.result.file_path as string), "utf8");
     expect(content.startsWith("{")).toBe(true);
     expect(content).not.toContain("---");
     JSON.parse(content); // Should not throw
@@ -63,7 +63,7 @@ describe("materializeOutput", () => {
     expect(result).not.toBeNull();
     expect(result?.result.file_path).toMatch(/\.txt$/);
 
-    const content = await fs.readFile(result!.result.file_path as string, "utf8");
+    const content = await fs.readFile(path.join(tempWorkspace, result!.result.file_path as string), "utf8");
     expect(content.startsWith("---")).toBe(true);
     expect(content).toContain('package_id: "pkg1"');
     expect(content).toContain(text);
@@ -130,7 +130,7 @@ describe("materializeOutput", () => {
     const text = "A".repeat(150_000);
     const result = await materializeOutput("pkg1", "tool1", {}, createToolResult(text), 100, spaceWorkspace, 100_000);
     expect(result).not.toBeNull();
-    expect(await fs.readFile(result!.result.file_path as string, "utf8")).toContain(text);
+    expect(await fs.readFile(path.join(spaceWorkspace, result!.result.file_path as string), "utf8")).toContain(text);
     await fs.rm(spaceWorkspace, { recursive: true, force: true });
   });
 
@@ -167,13 +167,12 @@ describe("materializeOutput", () => {
     expect(resOverLimit).not.toBeNull(); // One char over -> materializes
   });
 
-  it("T16: file_path in response is absolute, not relative", async () => {
+  it("T16: file_path in response is workspace-relative with forward slashes", async () => {
     const text = "A".repeat(150_000);
     const result = await materializeOutput("pkg1", "tool1", { a: 1 }, createToolResult(text), 123, tempWorkspace, 100_000);
-    
-    expect(path.isAbsolute(result!.result.file_path as string)).toBe(true);
-    expect(result!.result.file_path).toContain(path.join(".rebel", "tool-outputs"));
-    
+    expect(result!.result.file_path).toMatch(/^\.rebel\/tool-outputs\//);
+    expect(path.isAbsolute(result!.result.file_path as string)).toBe(false);
+    expect(result!.result.file_path).not.toContain('\\');
   });
 
   it("T17: .rebel/tool-outputs directory creation failure -> falls back to continuation", async () => {
