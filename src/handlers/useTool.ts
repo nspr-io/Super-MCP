@@ -8,6 +8,7 @@ import { getLogger } from "../logging.js";
 import { getSecurityPolicy } from "../security.js";
 import { findBestMatch } from "../utils/fuzzyMatch.js";
 import { coerceStringifiedJson, coerceStringifiedBoolean, coerceStringifiedNumber } from "../utils/normalizeInput.js";
+import { materializeOutput } from "./materializeOutput.js";
 
 const logger = getLogger();
 
@@ -664,6 +665,32 @@ export async function handleUseTool(
     const effectiveLimit = max_output_chars === null
       ? undefined
       : (max_output_chars ?? DEFAULT_MAX_OUTPUT_CHARS);
+
+    if (effectiveLimit !== undefined && process.env.REBEL_WORKSPACE_PATH) {
+      try {
+        const matResult = await materializeOutput(
+          package_id,
+          tool_id,
+          args,
+          toolResult,
+          duration,
+          process.env.REBEL_WORKSPACE_PATH,
+          effectiveLimit
+        );
+        if (matResult) {
+          return {
+            content: [{ type: "text", text: JSON.stringify(matResult, null, 2) }],
+            isError: false,
+          };
+        }
+      } catch (err: any) {
+        logger.warn("Materialization failed, falling back to continuation", {
+          error: err.message,
+          package_id,
+          tool_id
+        });
+      }
+    }
 
     let finalToolResult: unknown = toolResult;
     let wasTruncated = false;
