@@ -191,6 +191,7 @@ export interface UseToolOutput {
     output_truncated?: boolean;
     original_output_chars?: number;
     result_id?: string;
+    materialized?: boolean;
   };
 }
 
