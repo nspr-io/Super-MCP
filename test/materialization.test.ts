@@ -64,7 +64,7 @@ describe("materializeOutput", () => {
 
     const content = await fs.readFile(result!.result.file_path as string, "utf8");
     expect(content.startsWith("---")).toBe(true);
-    expect(content).toContain("package_id: pkg1");
+    expect(content).toContain('package_id: "pkg1"');
     expect(content).toContain(text);
   });
 
@@ -98,7 +98,15 @@ describe("materializeOutput", () => {
     mockFs.mockRestore();
   });
 
-  it("T9: is not handled directly by materializeOutput, caller skips it if limit is undefined", () => {});
+  it("T9: max_output_chars: null is handled by caller — materializeOutput requires explicit limit", async () => {
+    // When max_output_chars is null, useTool.ts sets effectiveLimit to undefined
+    // and skips the materialization call entirely. This test verifies that
+    // materializeOutput correctly materializes when called with a valid limit,
+    // confirming the caller is responsible for the null gate.
+    const text = "A".repeat(150_000);
+    const result = await materializeOutput("pkg1", "tool1", {}, createToolResult(text), 100, tempWorkspace, 100_000);
+    expect(result).not.toBeNull(); // With explicit limit, materialization happens
+  });
 
   it("T10: First call creates .rebel/tool-outputs/ directory", async () => {
     const text = "A".repeat(150_000);
@@ -146,14 +154,16 @@ describe("materializeOutput", () => {
     expect(Object.keys(result!).sort()).toEqual(["args_used", "package_id", "result", "telemetry", "tool_id"]);
   });
 
-  it("T15: Output exactly limit chars -> boundary behavior", async () => {
-    const jsonStr = JSON.stringify({ a: "A".repeat(99_980) }); // Exact 100K JSON
-    // Limit is 100K
-    const result = await materializeOutput("pkg1", "tool1", {}, createToolResult(jsonStr), 100, tempWorkspace, 100_000);
-    // Let's just pass exact string to make fileContent exactly 100_000
-    const text = "A".repeat(100_000 - 40); // exactly accounts for frontmatter
-    const res2 = await materializeOutput("pkg1", "tool1", {}, createToolResult(text), 100, tempWorkspace, 100_000);
-    expect(res2).toBeNull();
+  it("T15: Output exactly at limit -> no materialization; limit+1 -> materializes", async () => {
+    // Text output: frontmatter adds overhead. Compute frontmatter length for these test values.
+    const frontmatterLen = `---\npackage_id: "pkg1"\ntool_id: "tool1"\n---\n`.length;
+    const textAtLimit = "A".repeat(100_000 - frontmatterLen);
+    const resAtLimit = await materializeOutput("pkg1", "tool1", {}, createToolResult(textAtLimit), 100, tempWorkspace, 100_000);
+    expect(resAtLimit).toBeNull(); // Exactly at limit -> no materialization
+
+    const textOverLimit = "A".repeat(100_000 - frontmatterLen + 1);
+    const resOverLimit = await materializeOutput("pkg1", "tool1", {}, createToolResult(textOverLimit), 100, tempWorkspace, 100_000);
+    expect(resOverLimit).not.toBeNull(); // One char over -> materializes
   });
 
   it("T16: file_path in response is absolute, not relative", async () => {

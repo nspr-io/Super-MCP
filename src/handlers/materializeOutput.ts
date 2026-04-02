@@ -6,6 +6,10 @@ import { getLogger } from "../logging.js";
 
 const logger = getLogger();
 
+function sanitizeForFilename(str: string): string {
+  return str.replace(/[\\/:*?"<>|\n\r]/g, '_').replace(/\.\.+/g, '_').slice(0, 80);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -71,7 +75,7 @@ export async function materializeOutput(
     fileContent = JSON.stringify(parsedData, null, 2);
   } else {
     ext = ".txt";
-    const frontmatter = `---\npackage_id: ${package_id}\ntool_id: ${tool_id}\n---\n`;
+    const frontmatter = `---\npackage_id: ${JSON.stringify(package_id)}\ntool_id: ${JSON.stringify(tool_id)}\n---\n`;
     fileContent = frontmatter + (data as string);
   }
 
@@ -95,10 +99,21 @@ export async function materializeOutput(
   const HH = String(now.getHours()).padStart(2, "0");
   const MM = String(now.getMinutes()).padStart(2, "0");
   const hash = crypto.randomBytes(4).toString('hex');
-  const filename = `${yy}${mm}${dd}_${HH}${MM}_${package_id}_${tool_id}_${hash}${ext}`;
+  const safePackageId = sanitizeForFilename(package_id);
+  const safeToolId = sanitizeForFilename(tool_id);
+  const filename = `${yy}${mm}${dd}_${HH}${MM}_${safePackageId}_${safeToolId}_${hash}${ext}`;
 
   const targetDir = path.join(workspacePath, ".rebel", "tool-outputs");
   const filePath = path.join(targetDir, filename);
+
+  // Defense-in-depth: verify resolved path is within the target directory
+  const resolvedPath = path.resolve(filePath);
+  const resolvedTarget = path.resolve(targetDir);
+  if (!resolvedPath.startsWith(resolvedTarget + path.sep) && resolvedPath !== resolvedTarget) {
+    logger.error("Path traversal detected, aborting materialization", { package_id, tool_id, filePath });
+    return null;
+  }
+
   const tmpFilePath = filePath + ".tmp";
 
   try {
