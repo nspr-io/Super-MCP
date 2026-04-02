@@ -48,7 +48,7 @@ describe("Materialization Integration (I1-I4)", () => {
     return { mockRegistry, mockCatalog, mockValidator, mockClient };
   };
 
-  it("I1 & I2 & I3: Output >100K -> file appears, content matches, relative path returned", async () => {
+  it("I1 & I2 & I3: Output >100K -> file appears, content matches, absolute path returned", async () => {
     const text = "A".repeat(150_000);
     const mockToolResult = {
       content: [{ type: "text", text }]
@@ -66,18 +66,18 @@ describe("Materialization Integration (I1-I4)", () => {
     expect(result.isError).toBe(false);
     const responseData = JSON.parse(result.content[0].text);
     
-    // I3: Response includes correct relative file path
+    // I3: Response includes correct absolute file path
     const filePath = responseData.result.file_path;
     expect(filePath).toBeTruthy();
-    expect(filePath).toMatch(/^\.rebel\/tool-outputs\//);
+    expect(path.isAbsolute(filePath)).toBe(true);
+    expect(filePath).toContain(path.join(".rebel", "tool-outputs"));
 
     // I1: File appears in temp workspace
-    const absolutePath = path.join(tempWorkspace, filePath);
-    const stat = await fs.stat(absolutePath);
+    const stat = await fs.stat(filePath);
     expect(stat.isFile()).toBe(true);
 
     // I2: File content matches original tool output exactly
-    const fileContent = await fs.readFile(absolutePath, "utf8");
+    const fileContent = await fs.readFile(filePath, "utf8");
     expect(fileContent).toContain(text);
   });
 
