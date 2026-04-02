@@ -25,6 +25,7 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   private oauthPort: number;
   private stateValue?: string;
   private staticCredentials?: StaticOAuthCredentials;
+  private redirectStarted: boolean = false;
   
   constructor(packageId: string, oauthPort: number = 5173, staticCredentials?: StaticOAuthCredentials) {
     this.packageId = packageId;
@@ -189,6 +190,7 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
   }
   
   async redirectToAuthorization(authUrl: URL) {
+    this.redirectStarted = true;
     logger.info("Opening browser for OAuth", { 
       package_id: this.packageId,
       url: authUrl.toString() 
@@ -232,6 +234,10 @@ export class SimpleOAuthProvider implements OAuthClientProvider {
         error: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  hasStartedRedirect(): boolean {
+    return this.redirectStarted;
   }
   
   async saveCodeVerifier(verifier: string) {

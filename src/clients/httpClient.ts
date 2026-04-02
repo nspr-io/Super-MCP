@@ -75,6 +75,7 @@ export class HttpMcpClient implements McpClient {
   private oauthPort: number;
   private requestQueue: PQueue;
   private externalOAuthProvider?: SimpleOAuthProvider;
+  private simpleOAuthProvider?: SimpleOAuthProvider;
   private usedSseFallback: boolean = false;
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
@@ -107,11 +108,46 @@ export class HttpMcpClient implements McpClient {
     return undefined;
   }
 
+  private isAuthLikeErrorMessage(message: string): boolean {
+    const normalized = message.toLowerCase();
+    return normalized.includes("redirect initiated") ||
+      normalized.includes("unauthorized") ||
+      normalized.includes("401") ||
+      normalized.includes("invalid_token") ||
+      normalized.includes("missing authorization") ||
+      normalized.includes("authentication required");
+  }
+
+  private async recreateClientForSseFallback(reason: string): Promise<void> {
+    logger.warn("Retrying OAuth bootstrap with SSE fallback", {
+      package_id: this.packageId,
+      reason,
+    });
+
+    try {
+      await this.client.close();
+    } catch (closeError) {
+      logger.debug("Error closing client during OAuth SSE fallback (expected)", {
+        package_id: this.packageId,
+        error: closeError instanceof Error ? closeError.message : String(closeError),
+      });
+    }
+
+    this.client = new Client(
+      { name: "super-mcp-router", version: "0.1.0" },
+      { capabilities: {} }
+    );
+    this.transport = undefined;
+    this.usedSseFallback = true;
+    this.isConnected = false;
+  }
+
   private async initializeOAuthIfNeeded(forceOAuth: boolean = false) {
     if (this.config.oauth && !this.oauthProvider) {
       // Use external provider if provided, otherwise create a new one
       const staticCreds = this.getStaticCredentials();
       const simpleProvider = this.externalOAuthProvider ?? new SimpleOAuthProvider(this.packageId, this.oauthPort, staticCreds);
+      this.simpleOAuthProvider = simpleProvider;
       
       // Only initialize if we created it (external provider should already be initialized)
       if (!this.externalOAuthProvider) {
@@ -262,7 +298,7 @@ export class HttpMcpClient implements McpClient {
         throw authError;
       }
       
-      if (errorMessage.includes("401") || errorMessage.includes("Unauthorized")) {
+      if (this.isAuthLikeErrorMessage(errorMessage)) {
         logger.error("Authentication required for MCP server", {
           package_id: this.packageId,
           message: `Run 'authenticate(package_id: "${this.packageId}")' to connect`,
@@ -508,20 +544,33 @@ export class HttpMcpClient implements McpClient {
       await this.connect();
       this.isConnected = true;
     } catch (error) {
-      if (error instanceof Error && 
-          (error.message.includes("redirect initiated") || 
-           error.message.includes("Unauthorized") ||
-           error.message.includes("401"))) {
+      let authError = error instanceof Error ? error : new Error(String(error));
+
+      if (this.isAuthLikeErrorMessage(authError.message) &&
+          !this.simpleOAuthProvider?.hasStartedRedirect() &&
+          this.config.transportType !== "sse" &&
+          !this.usedSseFallback) {
+        await this.recreateClientForSseFallback(authError.message);
+        try {
+          await this.connect();
+          this.isConnected = true;
+          return;
+        } catch (sseError) {
+          authError = sseError instanceof Error ? sseError : new Error(String(sseError));
+        }
+      }
+
+      if (this.isAuthLikeErrorMessage(authError.message)) {
         logger.debug("OAuth redirect initiated or auth needed (expected)", {
           package_id: this.packageId,
-          error: error.message
+          error: authError.message
         });
       } else {
         logger.error("Unexpected error during OAuth connect", {
           package_id: this.packageId,
-          error: error instanceof Error ? error.message : String(error)
+          error: authError.message
         });
-        throw error;
+        throw authError;
       }
     }
   }
