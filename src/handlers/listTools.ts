@@ -12,7 +12,7 @@ export async function handleListTools(
 ): Promise<any> {
   let {
     package_id,
-    detail = "full",
+    detail = "lite",
     page_size = 20,
     page_token,
   } = input;

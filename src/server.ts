@@ -421,7 +421,7 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
               helpfulMessage += ". Run 'list_tool_packages()' to see available packages.";
               break;
             case ERROR_CODES.TOOL_NOT_FOUND:
-              helpfulMessage += ". Run 'list_tools(package_id: \"...\")' to see available tools.";
+              helpfulMessage += ". Try 'search_tools(query: \"...\")' to find tools by intent, or 'list_tools(package_id: \"...\", detail: \"lite\")' to browse.";
               break;
             case ERROR_CODES.ARG_VALIDATION_FAILED:
               helpfulMessage += ". Use 'get_tool_details' to review the schema, or 'dry_run: true' to test arguments.";

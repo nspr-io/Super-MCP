@@ -160,7 +160,7 @@ list_tools(package_id: "github", detail: "full")
 
 ### -33002: TOOL_NOT_FOUND
 - The tool_id doesn't exist in the specified package
-- Solution: Use \`list_tools(package_id: "...", detail: "lite")\` to browse tools, or \`search_tools(query: "...")\` to find by intent
+- Solution: Use \`search_tools(query: "...")\` to find tools by intent, or \`list_tools(package_id: "...", detail: "lite")\` to browse
 
 ### -33003: ARG_VALIDATION_FAILED
 - Arguments don't match the tool's schema
@@ -284,8 +284,8 @@ This error means the package_id you specified doesn't exist.
 The tool_id doesn't exist in the specified package.
 
 ## How to Fix
-1. Run \`list_tools(package_id: "your-package", detail: "lite")\` to browse available tools
-2. Or use \`search_tools(query: "...")\` to find tools by intent
+1. Use \`search_tools(query: "...")\` to find tools by intent
+2. Or run \`list_tools(package_id: "your-package", detail: "lite")\` to browse available tools
 3. Use the exact tool_id from the response
 
 ## Common Causes
