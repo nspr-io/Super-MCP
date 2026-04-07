@@ -204,6 +204,10 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
                   type: "number",
                   description: "Character offset to start reading from in the cached result (used with result_id). Use 0 to get the full untruncated output.",
                 },
+                schema_hash: {
+                  type: "string",
+                  description: "Optional. Hash from get_tool_details response to verify schema freshness.",
+                },
               },
               required: ["package_id", "tool_id", "args"],
               examples: [

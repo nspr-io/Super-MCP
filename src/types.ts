@@ -177,6 +177,7 @@ export interface UseToolInput {
   max_output_chars?: number | null;
   result_id?: string;
   output_offset?: number;
+  schema_hash?: string;
 }
 
 export interface UseToolOutput {

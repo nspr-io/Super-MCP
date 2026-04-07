@@ -591,7 +591,7 @@ export async function handleUseTool(
   // Strip rebel-internal flags so they never leak to downstream tool handlers
   const { _rebel_staged, _rebel_staged_message, ...cleanInput } = input;
 
-  let { package_id, tool_id, args, dry_run = false, max_output_chars } = cleanInput;
+  let { package_id, tool_id, args, dry_run = false, max_output_chars, schema_hash } = cleanInput;
 
   // Normalize inputs that the model may have stringified (upstream Claude model bug).
   // See: anthropics/claude-code#25865, docs/investigations/260330_slow_turn_brute_force_search.md
@@ -697,13 +697,29 @@ export async function handleUseTool(
     };
   }
 
-  const schema = await catalog.getToolSchema(package_id, tool_id);
+  const catalogWithGetTool = catalog as Catalog & {
+    getTool?: (packageId: string, toolId: string) => Promise<{ tool?: { inputSchema?: unknown }; schemaHash?: string } | undefined>;
+  };
+  const cachedTool = typeof catalogWithGetTool.getTool === "function"
+    ? await catalogWithGetTool.getTool(package_id, tool_id)
+    : undefined;
+  const schema = cachedTool?.tool?.inputSchema ?? await catalog.getToolSchema(package_id, tool_id);
   if (!schema) {
     throw {
       code: ERROR_CODES.TOOL_NOT_FOUND,
       message: `Tool not found: ${tool_id} in package ${package_id}`,
       data: { package_id, tool_id },
     };
+  }
+
+  // schema_hash handshake (Phase 1: permissive — validate when present, pass through when absent)
+  if (schema_hash && cachedTool?.schemaHash) {
+    if (schema_hash !== cachedTool.schemaHash) {
+      logger.warn(
+        "schema_hash mismatch — tool schema may have changed since get_tool_details was called",
+        { tool_id, expected: cachedTool.schemaHash, got: schema_hash },
+      );
+    }
   }
 
   // Validate arguments unconditionally (before checking dry_run)

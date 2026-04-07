@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Validator, ValidationError } from "../src/validator.js";
 import { handleUseTool } from "../src/handlers/useTool.js";
 import { ERROR_CODES } from "../src/types.js";
 import { McpError, ErrorCode as SdkErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { getLogger } from "../src/logging.js";
 
 let idCounter = 0;
 
@@ -15,9 +16,11 @@ function createUseToolDeps(
   schema: any,
   options?: {
     callTool?: (toolId: string, args: any) => Promise<any>;
+    schemaHash?: string;
   },
 ) {
   const callTool = options?.callTool ?? (async () => ({ ok: true }));
+  const schemaHash = options?.schemaHash ?? "sha256:current-schema";
 
   const registry = {
     getPackage: () => ({ id: "mock" }),
@@ -31,6 +34,12 @@ function createUseToolDeps(
     ensurePackageLoaded: async () => {},
     getPackageStatus: () => "ready",
     getPackageError: () => null,
+    getTool: async () => ({
+      tool: {
+        inputSchema: schema,
+      },
+      schemaHash,
+    }),
     getToolSchema: async () => schema,
   };
 
@@ -622,6 +631,123 @@ describe("use_tool repair tickets", () => {
     const secondTicket = expectRepairTicket(second);
     expect(secondTicket.attempt).toBe(2);
     expect(secondTicket.schema_fragments).toHaveProperty("__full_schema");
+  });
+});
+
+describe("use_tool schema_hash handshake", () => {
+  it("allows calls when schema_hash is absent without warning", async () => {
+    const warnSpy = vi.spyOn(getLogger(), "warn");
+    const callTool = vi.fn(async () => ({ ok: true }));
+    const { registry, catalog, validator } = createUseToolDeps(
+      {
+        type: "object",
+        properties: {},
+      },
+      {
+        callTool,
+        schemaHash: "sha256:current",
+      },
+    );
+
+    try {
+      const result = await handleUseTool(
+        {
+          package_id: nextId("pkg"),
+          tool_id: nextId("tool"),
+          args: {},
+        },
+        registry as any,
+        catalog as any,
+        validator,
+      );
+
+      expect(result.isError).toBe(false);
+      expect(callTool).toHaveBeenCalledOnce();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("allows calls when schema_hash matches without warning", async () => {
+    const warnSpy = vi.spyOn(getLogger(), "warn");
+    const callTool = vi.fn(async () => ({ ok: true }));
+    const schemaHash = "sha256:current";
+    const { registry, catalog, validator } = createUseToolDeps(
+      {
+        type: "object",
+        properties: {},
+      },
+      {
+        callTool,
+        schemaHash,
+      },
+    );
+
+    try {
+      const result = await handleUseTool(
+        {
+          package_id: nextId("pkg"),
+          tool_id: nextId("tool"),
+          args: {},
+          schema_hash: schemaHash,
+        },
+        registry as any,
+        catalog as any,
+        validator,
+      );
+
+      expect(result.isError).toBe(false);
+      expect(callTool).toHaveBeenCalledOnce();
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("warns on schema_hash mismatch but still proceeds", async () => {
+    const warnSpy = vi.spyOn(getLogger(), "warn");
+    const callTool = vi.fn(async () => ({ ok: true }));
+    const toolId = nextId("tool");
+    const currentSchemaHash = "sha256:current";
+    const providedSchemaHash = "sha256:stale";
+    const { registry, catalog, validator } = createUseToolDeps(
+      {
+        type: "object",
+        properties: {},
+      },
+      {
+        callTool,
+        schemaHash: currentSchemaHash,
+      },
+    );
+
+    try {
+      const result = await handleUseTool(
+        {
+          package_id: nextId("pkg"),
+          tool_id: toolId,
+          args: {},
+          schema_hash: providedSchemaHash,
+        },
+        registry as any,
+        catalog as any,
+        validator,
+      );
+
+      expect(result.isError).toBe(false);
+      expect(callTool).toHaveBeenCalledOnce();
+      expect(warnSpy).toHaveBeenCalledWith(
+        "schema_hash mismatch — tool schema may have changed since get_tool_details was called",
+        expect.objectContaining({
+          tool_id: toolId,
+          expected: currentSchemaHash,
+          got: providedSchemaHash,
+        }),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
