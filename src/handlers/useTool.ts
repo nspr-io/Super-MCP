@@ -95,6 +95,8 @@ const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 100_000;
 const MAX_SCHEMA_FRAGMENTS = 5;
 const FULL_SCHEMA_FRAGMENT_KEY = "__full_schema";
+const FULL_SCHEMA_THRESHOLD = 2;
+const STOP_RETRYING_THRESHOLD = 3;
 const STOP_RETRYING_MESSAGE = "Arguments may require user clarification. Please ask the user for specifics.";
 const MAX_ATTEMPT_MAP_SIZE = 500;
 const validationAttemptMap = new Map<string, number>();
@@ -104,11 +106,15 @@ interface RepairTicket {
   type_errors: Array<{ field: string; expected: string; got: string; value?: unknown }>;
   enum_violations: Array<{ field: string; allowed: unknown[]; got: unknown }>;
   format_errors: Array<{ field: string; expected: string; got: unknown }>;
+  range_errors?: Array<{ field: string; constraint: string; limit: number; got: unknown }>;
+  pattern_errors?: Array<{ field: string; pattern: string; got: unknown }>;
+  length_errors?: Array<{ field: string; constraint: string; limit: number; got: unknown }>;
   unknown_fields: string[];
   did_you_mean: Record<string, string>;
   schema_fragments: Record<string, unknown>;
   valid_fields: string[];
   attempt: number;
+  downstream_error?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -259,6 +265,21 @@ function getValueType(value: unknown): string {
   return typeof value;
 }
 
+function getValidationLimit(value: unknown): number {
+  if (typeof value === "number") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return Number.NaN;
+}
+
 function buildSchemaFragments(
   schema: unknown,
   failingFields: Set<string>,
@@ -331,6 +352,30 @@ function summarizeRepairTicket(
     sections.push(`Format errors: ${details}.`);
   }
 
+  const rangeErrors = ticket.range_errors ?? [];
+  if (rangeErrors.length > 0) {
+    const details = rangeErrors
+      .map((entry) => `${entry.field} (${entry.constraint}: ${entry.limit}, got ${String(entry.got)})`)
+      .join("; ");
+    sections.push(`Range errors: ${details}.`);
+  }
+
+  const patternErrors = ticket.pattern_errors ?? [];
+  if (patternErrors.length > 0) {
+    const details = patternErrors
+      .map((entry) => `${entry.field} (must match ${entry.pattern}, got ${String(entry.got)})`)
+      .join("; ");
+    sections.push(`Pattern errors: ${details}.`);
+  }
+
+  const lengthErrors = ticket.length_errors ?? [];
+  if (lengthErrors.length > 0) {
+    const details = lengthErrors
+      .map((entry) => `${entry.field} (${entry.constraint}: ${entry.limit}, got ${String(entry.got)})`)
+      .join("; ");
+    sections.push(`Length errors: ${details}.`);
+  }
+
   if (ticket.unknown_fields.length > 0) {
     const details = ticket.unknown_fields
       .map((field) => {
@@ -367,6 +412,9 @@ function buildRepairTicket(
   const typeErrors: Array<{ field: string; expected: string; got: string; value?: unknown }> = [];
   const enumViolations: Array<{ field: string; allowed: unknown[]; got: unknown }> = [];
   const formatErrors: Array<{ field: string; expected: string; got: unknown }> = [];
+  const rangeErrors: Array<{ field: string; constraint: string; limit: number; got: unknown }> = [];
+  const patternErrors: Array<{ field: string; pattern: string; got: unknown }> = [];
+  const lengthErrors: Array<{ field: string; constraint: string; limit: number; got: unknown }> = [];
   const failingFields = new Set<string>();
   const validFields = isRecord(schema) && isRecord(schema.properties)
     ? Object.keys(schema.properties)
@@ -426,6 +474,42 @@ function buildRepairTicket(
         got: validationError.data,
       });
       failingFields.add(field);
+      continue;
+    }
+
+    if (["maximum", "minimum", "exclusiveMaximum", "exclusiveMinimum"].includes(validationError.keyword)) {
+      const field = getFieldFromValidationError(validationError);
+      rangeErrors.push({
+        field,
+        constraint: validationError.keyword,
+        limit: getValidationLimit(validationError.params?.limit),
+        got: validationError.data,
+      });
+      failingFields.add(field);
+      continue;
+    }
+
+    if (validationError.keyword === "pattern") {
+      const field = getFieldFromValidationError(validationError);
+      patternErrors.push({
+        field,
+        pattern: String(validationError.params?.pattern ?? "unknown"),
+        got: validationError.data,
+      });
+      failingFields.add(field);
+      continue;
+    }
+
+    if (["maxLength", "minLength", "maxItems", "minItems"].includes(validationError.keyword)) {
+      const field = getFieldFromValidationError(validationError);
+      lengthErrors.push({
+        field,
+        constraint: validationError.keyword,
+        limit: getValidationLimit(validationError.params?.limit),
+        got: validationError.data,
+      });
+      failingFields.add(field);
+      continue;
     }
   }
 
@@ -437,9 +521,9 @@ function buildRepairTicket(
     }
   }
 
-  const includeFullSchema = attempt >= 2;
+  const includeFullSchema = attempt >= FULL_SCHEMA_THRESHOLD;
 
-  return {
+  const repairTicket: RepairTicket = {
     missing_required: missingRequired,
     type_errors: typeErrors,
     enum_violations: enumViolations,
@@ -450,6 +534,20 @@ function buildRepairTicket(
     valid_fields: validFields,
     attempt,
   };
+
+  if (rangeErrors.length > 0) {
+    repairTicket.range_errors = rangeErrors;
+  }
+
+  if (patternErrors.length > 0) {
+    repairTicket.pattern_errors = patternErrors;
+  }
+
+  if (lengthErrors.length > 0) {
+    repairTicket.length_errors = lengthErrors;
+  }
+
+  return repairTicket;
 }
 
 export async function handleUseTool(
@@ -610,13 +708,15 @@ export async function handleUseTool(
 
   // Validate arguments unconditionally (before checking dry_run)
   const validationAttemptKey = getValidationAttemptKey(package_id, tool_id);
+  const downstreamValidationAttemptKey = `${validationAttemptKey}::downstream`;
   const validationResult = validator.validate(schema, args, { package_id, tool_id });
   const strippedArgs = validationResult.strippedArgs;
 
   if (!validationResult.valid || strippedArgs.length > 0) {
+    resetValidationAttempt(downstreamValidationAttemptKey);
     const attempt = incrementValidationAttempt(validationAttemptKey);
     const repairTicket = buildRepairTicket(schema, validationResult.errors, strippedArgs, attempt);
-    const shouldStopRetrying = attempt >= 3;
+    const shouldStopRetrying = attempt >= STOP_RETRYING_THRESHOLD;
 
     throw {
       code: ERROR_CODES.ARG_VALIDATION_FAILED,
@@ -634,6 +734,7 @@ export async function handleUseTool(
   resetValidationAttempt(validationAttemptKey);
 
   if (dry_run) {
+    resetValidationAttempt(downstreamValidationAttemptKey);
     const result: UseToolOutput = {
       package_id,
       tool_id,
@@ -764,6 +865,8 @@ export async function handleUseTool(
       outputJson = JSON.stringify(result, null, 2);
     }
 
+    resetValidationAttempt(downstreamValidationAttemptKey);
+
     return {
       content: [
         {
@@ -779,19 +882,45 @@ export async function handleUseTool(
     const errorMessage = error instanceof Error ? error.message : String(error);
 
     if (error instanceof McpError && error.code === SdkErrorCode.InvalidParams) {
+      const attempt = incrementValidationAttempt(downstreamValidationAttemptKey);
+      const shouldStopRetrying = attempt >= STOP_RETRYING_THRESHOLD;
+      const includeFullSchema = attempt >= FULL_SCHEMA_THRESHOLD;
+      const providedArgs = isRecord(args) ? Object.keys(args) : [];
+      const schemaFragments = buildSchemaFragments(schema, new Set(providedArgs), includeFullSchema);
+      const validFields = isRecord(schema) && isRecord(schema.properties)
+        ? Object.keys(schema.properties)
+        : [];
+
       throw {
         code: ERROR_CODES.ARG_VALIDATION_FAILED,
-        message: error.message,
+        message: `Downstream validation failed for tool '${tool_id}': ${error.message}${shouldStopRetrying ? ` ${STOP_RETRYING_MESSAGE}` : ""}`,
         data: {
           package_id,
           tool_id,
           duration_ms: duration,
-          args_provided: args ? Object.keys(args) : [],
+          args_provided: providedArgs,
           mcp_error_code: error.code,
           mcp_error_data: error.data,
+          repair_ticket: {
+            missing_required: [],
+            type_errors: [],
+            enum_violations: [],
+            format_errors: [],
+            range_errors: [],
+            pattern_errors: [],
+            length_errors: [],
+            unknown_fields: [],
+            did_you_mean: {},
+            schema_fragments: schemaFragments,
+            valid_fields: validFields,
+            attempt,
+            downstream_error: error.message,
+          },
         },
       };
     }
+
+    resetValidationAttempt(downstreamValidationAttemptKey);
     
     let diagnosticMessage = `Tool execution failed in package '${package_id}', tool '${tool_id}'.\n`;
     

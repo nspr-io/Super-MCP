@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { Validator, ValidationError } from "../src/validator.js";
 import { handleUseTool } from "../src/handlers/useTool.js";
 import { ERROR_CODES } from "../src/types.js";
+import { McpError, ErrorCode as SdkErrorCode } from "@modelcontextprotocol/sdk/types.js";
 
 let idCounter = 0;
 
@@ -10,11 +11,18 @@ function nextId(prefix: string): string {
   return `${prefix}-${idCounter}`;
 }
 
-function createUseToolDeps(schema: any) {
+function createUseToolDeps(
+  schema: any,
+  options?: {
+    callTool?: (toolId: string, args: any) => Promise<any>;
+  },
+) {
+  const callTool = options?.callTool ?? (async () => ({ ok: true }));
+
   const registry = {
     getPackage: () => ({ id: "mock" }),
     getClient: async () => ({
-      callTool: async () => ({ ok: true }),
+      callTool: async (toolId: string, args: any) => callTool(toolId, args),
     }),
     notifyActivity: () => {},
   };
@@ -61,9 +69,48 @@ async function runValidationFailure(options: {
   }
 }
 
+async function runDownstreamInvalidParams(options: {
+  schema: any;
+  args: any;
+  packageId?: string;
+  toolId?: string;
+  message?: string;
+  data?: unknown;
+}) {
+  const packageId = options.packageId ?? nextId("pkg");
+  const toolId = options.toolId ?? nextId("tool");
+  const { registry, catalog, validator } = createUseToolDeps(options.schema, {
+    callTool: async () => {
+      throw new McpError(
+        SdkErrorCode.InvalidParams,
+        options.message ?? "Downstream rejected params",
+        options.data,
+      );
+    },
+  });
+
+  try {
+    await handleUseTool(
+      {
+        package_id: packageId,
+        tool_id: toolId,
+        args: options.args,
+        dry_run: false,
+      },
+      registry as any,
+      catalog as any,
+      validator,
+    );
+    throw new Error("Expected downstream invalid params failure");
+  } catch (error) {
+    return error as any;
+  }
+}
+
 function expectRepairTicket(error: any): any {
   expect(error.code).toBe(ERROR_CODES.ARG_VALIDATION_FAILED);
-  expect(error.message).toContain("Argument validation failed");
+  expect(typeof error.message).toBe("string");
+  expect(error.message.length).toBeGreaterThan(0);
   expect(error.data).toBeDefined();
   expect(error.data.repair_ticket).toBeDefined();
   return error.data.repair_ticket;
@@ -261,6 +308,123 @@ describe("use_tool repair tickets", () => {
     );
   });
 
+  it("includes range errors in repair_ticket for maximum violations", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        amount: {
+          type: "number",
+          maximum: 50,
+        },
+      },
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({ schema, args: { amount: 1000 } });
+    const repairTicket = expectRepairTicket(error);
+    expect(repairTicket.range_errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: "amount",
+          constraint: "maximum",
+          limit: 50,
+          got: 1000,
+        }),
+      ]),
+    );
+  });
+
+  it("includes pattern errors in repair_ticket", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        date: {
+          type: "string",
+          pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+        },
+      },
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({ schema, args: { date: "not-a-date" } });
+    const repairTicket = expectRepairTicket(error);
+    expect(repairTicket.pattern_errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: "date",
+          pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+          got: "not-a-date",
+        }),
+      ]),
+    );
+  });
+
+  it("includes length errors in repair_ticket for maxLength violations", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        title: {
+          type: "string",
+          maxLength: 10,
+        },
+      },
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({ schema, args: { title: "x".repeat(50) } });
+    const repairTicket = expectRepairTicket(error);
+    expect(repairTicket.length_errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          field: "title",
+          constraint: "maxLength",
+          limit: 10,
+          got: "x".repeat(50),
+        }),
+      ]),
+    );
+  });
+
+  it("omits new constraint arrays when no matching keyword errors are present", async () => {
+    const schema = {
+      type: "object",
+      properties: { name: { type: "string" } },
+      required: ["name"],
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({ schema, args: {} });
+    const repairTicket = expectRepairTicket(error);
+    expect(repairTicket.range_errors).toBeUndefined();
+    expect(repairTicket.pattern_errors).toBeUndefined();
+    expect(repairTicket.length_errors).toBeUndefined();
+  });
+
+  it("includes range/pattern/length sections in summarized repair message", async () => {
+    const schema = {
+      type: "object",
+      properties: {
+        amount: { type: "number", maximum: 50 },
+        date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+        title: { type: "string", maxLength: 5 },
+      },
+      additionalProperties: false,
+    };
+
+    const error = await runValidationFailure({
+      schema,
+      args: {
+        amount: 1000,
+        date: "next Tuesday",
+        title: "this title is too long",
+      },
+    });
+
+    expect(error.message).toContain("Range errors:");
+    expect(error.message).toContain("Pattern errors:");
+    expect(error.message).toContain("Length errors:");
+  });
+
   it("uses stripped args as unknown_fields", async () => {
     const schema = {
       type: "object",
@@ -389,6 +553,75 @@ describe("use_tool repair tickets", () => {
     const error = await runValidationFailure({ schema, args });
     const repairTicket = expectRepairTicket(error);
     expect(Object.keys(repairTicket.schema_fragments).length).toBeLessThanOrEqual(5);
+  });
+
+  it("enriches downstream InvalidParams with field schema fragments on attempt 1", async () => {
+    const packageId = nextId("pkg");
+    const toolId = nextId("tool");
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 3 },
+        limit: { type: "number", minimum: 1 },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    };
+
+    const error = await runDownstreamInvalidParams({
+      schema,
+      args: { query: "hello" },
+      packageId,
+      toolId,
+      message: "query must include tenant context",
+      data: { source: "mock-server" },
+    });
+
+    const repairTicket = expectRepairTicket(error);
+    expect(error.message).toContain(`Downstream validation failed for tool '${toolId}'`);
+    expect(repairTicket.attempt).toBe(1);
+    expect(repairTicket.schema_fragments).toHaveProperty("query");
+    expect(repairTicket.schema_fragments).not.toHaveProperty("__full_schema");
+    expect(repairTicket.range_errors).toEqual([]);
+    expect(repairTicket.pattern_errors).toEqual([]);
+    expect(repairTicket.length_errors).toEqual([]);
+    expect(repairTicket.downstream_error).toContain("query must include tenant context");
+  });
+
+  it("escalates downstream InvalidParams to full schema on attempt 2", async () => {
+    const packageId = nextId("pkg");
+    const toolId = nextId("tool");
+    const schema = {
+      type: "object",
+      properties: {
+        query: { type: "string", minLength: 3 },
+        region: { type: "string" },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    };
+
+    const first = await runDownstreamInvalidParams({
+      schema,
+      args: { query: "hello" },
+      packageId,
+      toolId,
+      message: "still invalid",
+    });
+    const firstTicket = expectRepairTicket(first);
+    expect(firstTicket.attempt).toBe(1);
+    expect(firstTicket.schema_fragments).not.toHaveProperty("__full_schema");
+
+    const second = await runDownstreamInvalidParams({
+      schema,
+      args: { query: "hello" },
+      packageId,
+      toolId,
+      message: "still invalid",
+    });
+    const secondTicket = expectRepairTicket(second);
+    expect(secondTicket.attempt).toBe(2);
+    expect(secondTicket.schema_fragments).toHaveProperty("__full_schema");
   });
 });
 
