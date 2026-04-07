@@ -93,6 +93,11 @@ function handleContinuation(
 }
 const LARGE_OUTPUT_WARNING_THRESHOLD = 150_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 100_000;
+
+// Materialization threshold: save outputs > 20K chars to file instead of keeping in context.
+// Separate from DEFAULT_MAX_OUTPUT_CHARS (100K) which drives truncation + continuation chunk size.
+// With auto-materialization, data isn't lost — it's saved to .rebel/tool-outputs/ for Read/Grep access.
+const MATERIALIZATION_THRESHOLD_CHARS = 20_000;
 const MAX_SCHEMA_FRAGMENTS = 5;
 const FULL_SCHEMA_FRAGMENT_KEY = "__full_schema";
 const FULL_SCHEMA_THRESHOLD = 2;
@@ -779,11 +784,18 @@ export async function handleUseTool(
     registry.notifyActivity(package_id);
     const duration = Date.now() - startTime;
 
+    // effectiveLimit: drives truncation + continuation chunk size (100K default)
     const effectiveLimit = max_output_chars === null
       ? undefined
       : (max_output_chars ?? DEFAULT_MAX_OUTPUT_CHARS);
 
-    if (effectiveLimit !== undefined && process.env.REBEL_WORKSPACE_PATH) {
+    // materializationLimit: drives when to save large outputs to file (20K default).
+    // When caller passes explicit max_output_chars, use that for both (caller knows their budget).
+    const materializationLimit = max_output_chars === null
+      ? undefined
+      : (max_output_chars ?? MATERIALIZATION_THRESHOLD_CHARS);
+
+    if (materializationLimit !== undefined && process.env.REBEL_WORKSPACE_PATH) {
       try {
         const matResult = await materializeOutput(
           package_id,
@@ -792,7 +804,7 @@ export async function handleUseTool(
           toolResult,
           duration,
           process.env.REBEL_WORKSPACE_PATH,
-          effectiveLimit
+          materializationLimit
         );
         if (matResult) {
           return {
