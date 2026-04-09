@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { ToolInfo, PackageConfig } from "./types.js";
 import { PackageRegistry } from "./registry.js";
 import { argsSkeleton, summarizePackage, createSchemaHash } from "./summarize.js";
@@ -147,6 +148,39 @@ export class Catalog {
   countTools(packageId: string): number {
     const cached = this.cache.get(packageId);
     return cached?.tools.length || 0;
+  }
+
+  computePackageEmbeddingHash(packageId: string): string {
+    const cached = this.cache.get(packageId);
+    if (!cached || cached.status !== "ready" || cached.tools.length === 0) {
+      return "";
+    }
+
+    const packageName = this.registry.getPackage(packageId)?.name || packageId;
+    const entries = cached.tools.map((cachedTool) => {
+      const schemaProperties =
+        cachedTool.tool?.inputSchema &&
+        typeof cachedTool.tool.inputSchema === "object" &&
+        !Array.isArray(cachedTool.tool.inputSchema) &&
+        cachedTool.tool.inputSchema.properties &&
+        typeof cachedTool.tool.inputSchema.properties === "object"
+          ? cachedTool.tool.inputSchema.properties
+          : undefined;
+
+      const paramNames = schemaProperties
+        ? Object.keys(schemaProperties).sort().join(",")
+        : "";
+
+      return [
+        packageId,
+        packageName,
+        cachedTool.tool?.name || "",
+        cachedTool.summary || cachedTool.tool?.description || "",
+        paramNames,
+      ].join(":");
+    }).sort();
+
+    return crypto.createHash("sha256").update(entries.join("\n")).digest("hex");
   }
 
   async getTool(packageId: string, toolId: string): Promise<CachedTool | undefined> {
