@@ -31,6 +31,215 @@ import { formatError } from "./utils/formatError.js";
 
 const logger = getLogger();
 
+type ToolCatalogEntry = {
+  package_id: string;
+  package_name: string;
+  tool_id: string;
+  name: string;
+  description: string;
+  summary?: string;
+  input_schema?: unknown;
+  blocked?: boolean;
+  blocked_reason?: string;
+  user_disabled?: boolean;
+  admin_disabled?: boolean;
+};
+
+type ManifestPackageEntry = {
+  package_id: string;
+  package_name: string;
+  tool_count: number;
+  embedding_hash: string;
+  status: string;
+};
+
+function parseRequestedPackageIds(queryValue: unknown): string[] | null {
+  const rawValues = Array.isArray(queryValue) ? queryValue : [queryValue];
+  const packageIds = rawValues
+    .flatMap((value) => (typeof value === "string" ? value.split(",") : []))
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return packageIds.length > 0 ? packageIds : null;
+}
+
+function selectPackages(registry: PackageRegistry, requestedPackageIds: string[] | null): ReturnType<PackageRegistry["getPackages"]> {
+  const packages = registry.getPackages();
+  if (!requestedPackageIds) {
+    return packages;
+  }
+
+  const requestedSet = new Set(requestedPackageIds);
+  return packages.filter((pkg) => requestedSet.has(pkg.id));
+}
+
+export function registerHttpApiRoutes(
+  app: express.Express,
+  options: {
+    registry: PackageRegistry;
+    catalog: Catalog;
+    dnsRebindingGuard: express.RequestHandler;
+  }
+): void {
+  const { registry, catalog, dnsRebindingGuard } = options;
+
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok", transport: "http" });
+  });
+
+  // Lightweight config-hash endpoint: returns a hash of the package registry config
+  // without spinning up any MCP servers. Used by Rebel as a cheap first-tier check
+  // to skip the full manifest endpoint on most startups (config unchanged = tools unchanged).
+  app.get("/api/tools/config-hash", (_req, res) => {
+    try {
+      const packages = registry.getPackages();
+      const configEntries = packages.map(pkg => {
+        // Hash config-relevant fields (exclude runtime state like env var values that
+        // change between runs but don't affect tool availability)
+        return `${pkg.id}:${pkg.name}:${pkg.transport}:${pkg.command ?? ''}:${(pkg.args ?? []).join(',')}:${pkg.base_url ?? ''}:${pkg.visibility ?? 'default'}`;
+      }).sort();
+      const configHash = crypto.createHash('sha256').update(configEntries.join('\n')).digest('hex');
+
+      const securityPolicy = getSecurityPolicy();
+      const securityHash = `${securityPolicy.getUserDisabledHash()}-${securityPolicy.getAdminDisabledHash()}`;
+
+      res.json({
+        config_hash: configHash,
+        security_hash: securityHash,
+        package_ids: packages.map(p => p.id).sort(),
+        package_count: packages.length,
+      });
+    } catch (error) {
+      logger.error("Failed to compute config hash", { error: formatError(error) });
+      res.status(500).json({ error: "Failed to compute config hash" });
+    }
+  });
+
+  app.get("/api/tools/manifest", async (_req, res) => {
+    try {
+      const packages = registry.getPackages();
+      const queue = new PQueue({ concurrency: 5 });
+
+      await Promise.all(
+        packages.map((pkg) =>
+          queue.add(async () => {
+            try {
+              await catalog.ensurePackageLoaded(pkg.id);
+            } catch (pkgError) {
+              logger.warn("Failed to load package for manifest", {
+                package_id: pkg.id,
+                error: pkgError instanceof Error ? pkgError.message : String(pkgError),
+              });
+            }
+          })
+        )
+      );
+
+      const packageEntries: ManifestPackageEntry[] = packages.map((pkg) => ({
+        package_id: pkg.id,
+        package_name: pkg.name || pkg.id,
+        tool_count: catalog.countTools(pkg.id),
+        embedding_hash: catalog.computePackageEmbeddingHash(pkg.id),
+        status: catalog.getPackageStatus(pkg.id),
+      }));
+
+      const securityPolicy = getSecurityPolicy();
+      const securityHash = `${securityPolicy.getUserDisabledHash()}-${securityPolicy.getAdminDisabledHash()}`;
+
+      res.json({
+        packages: packageEntries,
+        security_hash: securityHash,
+        package_count: packages.length,
+        generated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.error("Failed to build tool manifest", {
+        error: formatError(error),
+      });
+      res.status(500).json({ error: "Failed to build tool manifest" });
+    }
+  });
+
+  app.get("/api/tools", async (req, res) => {
+    try {
+      const requestedPackageIds = parseRequestedPackageIds(req.query.packages);
+      const packages = selectPackages(registry, requestedPackageIds);
+
+      if (requestedPackageIds) {
+        logger.debug("Selective tool fetch", {
+          requested: requestedPackageIds.length,
+          matched: packages.length,
+          requested_package_ids: requestedPackageIds,
+        });
+      }
+
+      const queue = new PQueue({ concurrency: 5 });
+
+      const results = await Promise.all(
+        packages.map((pkg) =>
+          queue.add(async (): Promise<ToolCatalogEntry[]> => {
+            try {
+              await catalog.ensurePackageLoaded(pkg.id);
+              const tools = await catalog.buildToolInfos(pkg.id, {
+                summarize: true,
+                include_schemas: true,
+                include_descriptions: true,
+              });
+
+              return tools.map((tool) => ({
+                package_id: pkg.id,
+                package_name: pkg.name || pkg.id,
+                tool_id: tool.tool_id,
+                name: tool.name,
+                description: tool.description || tool.summary || "",
+                summary: tool.summary,
+                input_schema: tool.schema,
+                ...computeSecurityAnnotation(pkg.id, pkg.catalogId, extractRawToolId(tool.tool_id)),
+              }));
+            } catch (pkgError) {
+              logger.warn("Failed to load tools for package", {
+                package_id: pkg.id,
+                error: pkgError instanceof Error ? pkgError.message : String(pkgError),
+              });
+              return [];
+            }
+          })
+        )
+      );
+
+      const allTools = results.flat().filter((tool): tool is ToolCatalogEntry => tool !== undefined);
+
+      const securityPolicy = getSecurityPolicy();
+      const userDisabledSummary = securityPolicy.getUserDisabledSummary();
+      const userDisabledHash = securityPolicy.getUserDisabledHash();
+      const adminDisabledSummary = securityPolicy.getAdminDisabledSummary();
+      const adminDisabledHash = securityPolicy.getAdminDisabledHash();
+      const baseEtag = catalog.etag();
+      const combinedEtag = `"${baseEtag.replace(/"/g, "")}-ud${userDisabledHash}-ad${adminDisabledHash}"`;
+
+      res.setHeader("ETag", combinedEtag);
+      res.json({
+        tools: allTools,
+        etag: combinedEtag,
+        tool_count: allTools.length,
+        package_count: packages.length,
+        user_disabled_count: userDisabledSummary.totalDisabled,
+        admin_disabled_count: adminDisabledSummary.totalDisabled,
+        generated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.error("Failed to build tool catalog", {
+        error: formatError(error),
+      });
+      res.status(500).json({ error: "Failed to build tool catalog" });
+    }
+  });
+
+  app.get("/api/skipped-servers", dnsRebindingGuard, (_req, res) => {
+    res.json({ packages: registry.getSkippedPackages() });
+  });
+}
+
 export async function startServer(options: {
   configPath?: string;
   configPaths?: string[];
@@ -508,6 +717,7 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
       app.use('/mcp', dnsRebindingGuard);
 
       app.use(express.json());
+      registerHttpApiRoutes(app, { registry, catalog, dnsRebindingGuard });
 
       interface SessionEntry {
         server: Server;
@@ -529,101 +739,6 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
           }
         }
       }, GC_INTERVAL_MS);
-
-      app.get("/health", (_req, res) => {
-        res.json({ status: "ok", transport: "http" });
-      });
-
-      // REST API endpoint for bulk tool export (used by Rebel for tool indexing)
-      // Returns all tools from all packages with etag for cache invalidation
-      // Also includes user-disabled status for tools
-      app.get("/api/tools", async (_req, res) => {
-        try {
-          type ToolEntry = {
-            package_id: string;
-            package_name: string;
-            tool_id: string;
-            name: string;
-            description: string;
-            summary?: string;
-            input_schema?: unknown;
-            blocked?: boolean;
-            blocked_reason?: string;
-            user_disabled?: boolean;
-            admin_disabled?: boolean;
-          };
-
-          const packages = registry.getPackages();
-          const queue = new PQueue({ concurrency: 5 });
-
-          // Parallelize package loading with bounded concurrency, collect results in order
-          const results = await Promise.all(
-            packages.map((pkg) =>
-              queue.add(async (): Promise<ToolEntry[]> => {
-                try {
-                  await catalog.ensurePackageLoaded(pkg.id);
-                  const tools = await catalog.buildToolInfos(pkg.id, {
-                    summarize: true,
-                    include_schemas: true,
-                    include_descriptions: true,
-                  });
-
-                  return tools.map(tool => ({
-                    package_id: pkg.id,
-                    package_name: pkg.name || pkg.id,
-                    tool_id: tool.tool_id,
-                    name: tool.name,
-                    description: tool.description || tool.summary || "",
-                    summary: tool.summary,
-                    input_schema: tool.schema,
-                    ...computeSecurityAnnotation(pkg.id, pkg.catalogId, extractRawToolId(tool.tool_id)),
-                  }));
-                } catch (pkgError) {
-                  logger.warn("Failed to load tools for package", {
-                    package_id: pkg.id,
-                    error: pkgError instanceof Error ? pkgError.message : String(pkgError),
-                  });
-                  return []; // Return empty array on error, continue with other packages
-                }
-              })
-            )
-          );
-
-          // Flatten results while preserving package order
-          const allTools = results.flat().filter((t): t is ToolEntry => t !== undefined);
-
-          // Include user-disabled and admin-disabled hashes in ETag to invalidate cache when they change
-          // Use content hash (not just count) so swapping disabled tools invalidates cache
-          const securityPolicy = getSecurityPolicy();
-          const userDisabledSummary = securityPolicy.getUserDisabledSummary();
-          const userDisabledHash = securityPolicy.getUserDisabledHash();
-          const adminDisabledSummary = securityPolicy.getAdminDisabledSummary();
-          const adminDisabledHash = securityPolicy.getAdminDisabledHash();
-          const baseEtag = catalog.etag();
-          const combinedEtag = `"${baseEtag.replace(/"/g, '')}-ud${userDisabledHash}-ad${adminDisabledHash}"`;
-          
-          res.setHeader("ETag", combinedEtag);
-          res.json({
-            tools: allTools,
-            etag: combinedEtag,
-            tool_count: allTools.length,
-            package_count: packages.length,
-            user_disabled_count: userDisabledSummary.totalDisabled,
-            admin_disabled_count: adminDisabledSummary.totalDisabled,
-            generated_at: new Date().toISOString(),
-          });
-        } catch (error) {
-          logger.error("Failed to build tool catalog", {
-            error: formatError(error),
-          });
-          res.status(500).json({ error: "Failed to build tool catalog" });
-        }
-      });
-
-      // REST API endpoint for skipped servers (used by Rebel for startup diagnostics)
-      app.get("/api/skipped-servers", dnsRebindingGuard, (_req, res) => {
-        res.json({ packages: registry.getSkippedPackages() });
-      });
 
       const mcpHandler = async (req: any, res: any) => {
         try {
