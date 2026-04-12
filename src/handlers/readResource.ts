@@ -6,11 +6,11 @@ import { getLogger } from "../logging.js";
 const logger = getLogger();
 
 export async function handleReadResource(
-  args: { uri: string },
+  args: { uri: string; _meta?: Record<string, unknown> },
   registry: PackageRegistry,
   catalog: Catalog
 ): Promise<ReadResourceResult> {
-  const { uri } = args;
+  const { uri, _meta } = args;
 
   if (!uri) {
     throw {
@@ -21,8 +21,23 @@ export async function handleReadResource(
 
   logger.info("Handling resource read request", { uri });
 
+  let packageId: string | undefined;
+
+  // Strategy 0: Use explicit package ID hint from _meta (highest priority)
+  const hintedPackageId = _meta?.rebel_packageId;
+  if (typeof hintedPackageId === 'string' && hintedPackageId) {
+    if (registry.getPackage(hintedPackageId)) {
+      packageId = hintedPackageId;
+      logger.debug("Resolved package from _meta.rebel_packageId hint", { uri, package_id: packageId });
+    } else {
+      logger.warn({ uri, hinted_id: hintedPackageId }, "_meta.rebel_packageId hint does not match any registered package, falling through to Strategy 1/2");
+    }
+  }
+
   // Strategy 1: Use smart mapping from tool metadata
-  let packageId = catalog.getPackageForResourceUri(uri);
+  if (!packageId) {
+    packageId = catalog.getPackageForResourceUri(uri);
+  }
 
   // Strategy 2: Fall back to explicit package prefix (ui://package-id/path)
   if (!packageId) {
