@@ -293,6 +293,7 @@ export class Catalog {
         args_skeleton: options.summarize ? cachedTool.argsSkeleton : undefined,
         schema_hash: cachedTool.schemaHash,
         schema: options.include_schemas ? cachedTool.tool.inputSchema : undefined,
+        ...(cachedTool.tool?.annotations ? { annotations: cachedTool.tool.annotations } : {}),
       };
     });
   }

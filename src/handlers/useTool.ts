@@ -762,6 +762,7 @@ export async function handleUseTool(
       args_used: args,
       result: { dry_run: true },
       telemetry: { duration_ms: 0, status: "ok" },
+      ...(cachedTool?.tool?.annotations ? { annotations: cachedTool.tool.annotations } : {}),
     };
 
     let dryRunJson = JSON.stringify(result, null, 2);
@@ -807,6 +808,10 @@ export async function handleUseTool(
           materializationLimit
         );
         if (matResult) {
+          // Forward connector tool annotations into materialized response
+          if (cachedTool?.tool?.annotations) {
+            matResult.annotations = cachedTool.tool.annotations;
+          }
           return {
             content: [{ type: "text", text: JSON.stringify(matResult, null, 2) }],
             isError: false,
@@ -835,6 +840,7 @@ export async function handleUseTool(
       args_used: args,
       result: toolResult,
       telemetry: { duration_ms: duration, status: "ok" },
+      ...(cachedTool?.tool?.annotations ? { annotations: cachedTool.tool.annotations } : {}),
     };
     const originalOutputChars = JSON.stringify(untruncatedResult, null, 2).length;
     const estimatedTokens = Math.ceil(originalOutputChars / 4);
@@ -845,6 +851,7 @@ export async function handleUseTool(
       args_used: args,
       result: finalToolResult,
       telemetry: { duration_ms: duration, status: "ok" },
+      ...(cachedTool?.tool?.annotations ? { annotations: cachedTool.tool.annotations } : {}),
     };
 
     let outputJson = JSON.stringify(result, null, 2);

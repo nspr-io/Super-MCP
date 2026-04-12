@@ -36,6 +36,13 @@ interface MockToolDef {
   argsSkeleton: any;
   schemaHash: string;
   inputSchema: any;
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
 }
 
 function makeToolDef(name: string, opts: Partial<MockToolDef> = {}): MockToolDef {
@@ -46,6 +53,7 @@ function makeToolDef(name: string, opts: Partial<MockToolDef> = {}): MockToolDef
     argsSkeleton: opts.argsSkeleton ?? { arg1: '<string>' },
     schemaHash: opts.schemaHash ?? `sha256:${name}hash`,
     inputSchema: opts.inputSchema ?? { type: 'object', properties: { arg1: { type: 'string' } } },
+    annotations: opts.annotations,
   };
 }
 
@@ -76,6 +84,7 @@ function createMockCatalog(
           name: found.name,
           description: found.description,
           inputSchema: found.inputSchema,
+          ...(found.annotations ? { annotations: found.annotations } : {}),
         },
         summary: found.summary,
         argsSkeleton: found.argsSkeleton,
@@ -514,5 +523,141 @@ describe('handleGetToolDetails', () => {
     const parsed = parseResult(result);
     expect(parsed.tools).toHaveLength(10);
     expect(parsed.tools.every((t: any) => !t.not_found && !t.error)).toBe(true);
+  });
+
+  // -----------------------------------------------------------------------
+  // MCP annotations forwarded in tool details
+  // -----------------------------------------------------------------------
+
+  describe('MCP annotations forwarding', () => {
+    it('annotations are included in tool details response', async () => {
+      const catalog = createMockCatalog({
+        'gmail': [makeToolDef('list_emails', {
+          description: 'List emails',
+          annotations: { readOnlyHint: true, destructiveHint: false },
+        })],
+      });
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['gmail__list_emails'] },
+        catalog,
+        registry,
+      );
+
+      const parsed = parseResult(result);
+      expect(parsed.tools).toHaveLength(1);
+      expect(parsed.tools[0].annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
+    });
+
+    it('full annotations with all fields are forwarded', async () => {
+      const catalog = createMockCatalog({
+        'web': [makeToolDef('search', {
+          description: 'Web search',
+          annotations: {
+            title: 'Web Search',
+            readOnlyHint: true,
+            destructiveHint: false,
+            idempotentHint: true,
+            openWorldHint: true,
+          },
+        })],
+      });
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['web__search'] },
+        catalog,
+        registry,
+      );
+
+      const parsed = parseResult(result);
+      expect(parsed.tools[0].annotations).toEqual({
+        title: 'Web Search',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      });
+    });
+
+    it('tool without annotations has no annotations field in response', async () => {
+      const catalog = createMockCatalog({
+        'gmail': [makeToolDef('send_email', {
+          description: 'Send an email',
+          // No annotations
+        })],
+      });
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['gmail__send_email'] },
+        catalog,
+        registry,
+      );
+
+      const parsed = parseResult(result);
+      expect(parsed.tools).toHaveLength(1);
+      expect(parsed.tools[0].annotations).toBeUndefined();
+      expect('annotations' in parsed.tools[0]).toBe(false);
+    });
+
+    it('annotations coexist with security annotations', async () => {
+      const catalog = createMockCatalog({
+        'gmail': [makeToolDef('delete_email', {
+          description: 'Delete an email',
+          annotations: { readOnlyHint: false, destructiveHint: true },
+        })],
+      });
+
+      // Mark tool as blocked
+      mockSecurityPolicy.isToolBlocked.mockImplementation((_pkgId: string, toolId: string) => {
+        if (toolId === 'delete_email') {
+          return { blocked: true, reason: 'Blocked by policy' };
+        }
+        return { blocked: false };
+      });
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['gmail__delete_email'] },
+        catalog,
+        registry,
+      );
+
+      const parsed = parseResult(result);
+      const tool = parsed.tools[0];
+      // MCP annotations present
+      expect(tool.annotations).toEqual({ readOnlyHint: false, destructiveHint: true });
+      // Security annotations also present
+      expect(tool.blocked).toBe(true);
+      expect(tool.blocked_reason).toBe('Blocked by policy');
+
+      mockSecurityPolicy.isToolBlocked.mockReturnValue({ blocked: false });
+    });
+
+    it('mixed annotated and unannotated tools in same response', async () => {
+      const catalog = createMockCatalog({
+        'gmail': [
+          makeToolDef('list_emails', {
+            annotations: { readOnlyHint: true },
+          }),
+          makeToolDef('send_email', {
+            // No annotations
+          }),
+        ],
+      });
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['gmail__list_emails', 'gmail__send_email'] },
+        catalog,
+        registry,
+      );
+
+      const parsed = parseResult(result);
+      expect(parsed.tools).toHaveLength(2);
+
+      const listTool = parsed.tools.find((t: any) => t.tool_id === 'gmail__list_emails');
+      expect(listTool.annotations).toEqual({ readOnlyHint: true });
+
+      const sendTool = parsed.tools.find((t: any) => t.tool_id === 'gmail__send_email');
+      expect(sendTool.annotations).toBeUndefined();
+    });
   });
 });

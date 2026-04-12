@@ -39,6 +39,13 @@ type ToolCatalogEntry = {
   description: string;
   summary?: string;
   input_schema?: unknown;
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
   blocked?: boolean;
   blocked_reason?: string;
   user_disabled?: boolean;
@@ -194,6 +201,7 @@ export function registerHttpApiRoutes(
                 description: tool.description || tool.summary || "",
                 summary: tool.summary,
                 input_schema: tool.schema,
+                ...(tool.annotations ? { annotations: tool.annotations } : {}),
                 ...computeSecurityAnnotation(pkg.id, pkg.catalogId, extractRawToolId(tool.tool_id)),
               }));
             } catch (pkgError) {

@@ -110,6 +110,7 @@ export async function handleGetToolDetails(
           args_skeleton: cachedTool.argsSkeleton,
           schema_hash: cachedTool.schemaHash,
           schema: cachedTool.tool.inputSchema,
+          ...(cachedTool.tool?.annotations ? { annotations: cachedTool.tool.annotations } : {}),
         };
 
         const catalogId = registry.getPackage(packageId)?.catalogId;

@@ -36,6 +36,13 @@ function makeTool(name: string, opts: {
   argsSkeleton?: any;
   schemaHash?: string;
   inputSchema?: any;
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
 } = {}) {
   return {
     package_id: 'test-pkg',
@@ -46,6 +53,7 @@ function makeTool(name: string, opts: {
     args_skeleton: opts.argsSkeleton ?? { arg1: '<string>' },
     schema_hash: opts.schemaHash ?? `sha256:${name}hash`,
     schema: opts.inputSchema ?? { type: 'object', properties: { arg1: { type: 'string' } } },
+    annotations: opts.annotations,
   };
 }
 
@@ -71,6 +79,7 @@ function createMockCatalog(tools: ReturnType<typeof makeTool>[]): Catalog {
           args_skeleton: summarize ? t.args_skeleton : undefined,
           schema_hash: t.schema_hash,
           schema: include_schemas ? t.schema : undefined,
+          ...(t.annotations ? { annotations: t.annotations } : {}),
         }))
       );
     }),
@@ -351,6 +360,95 @@ describe('handleListTools — detail parameter', () => {
       summarize: true,
       include_schemas: true,
       include_descriptions: true,
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // MCP annotations forwarded in both detail levels
+  // -----------------------------------------------------------------------
+
+  describe('MCP annotations forwarding', () => {
+    const annotatedTools = [
+      makeTool('list_contacts', {
+        description: 'List all contacts',
+        annotations: { readOnlyHint: true, destructiveHint: false },
+      }),
+      makeTool('delete_contact', {
+        description: 'Delete a contact',
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+      }),
+      makeTool('search_email', {
+        description: 'Search emails',
+        // No annotations — should produce annotations: undefined
+      }),
+    ];
+
+    it('annotations are forwarded with detail: "lite"', async () => {
+      const annotatedCatalog = createMockCatalog(annotatedTools);
+      const result = await handleListTools(
+        { package_id: 'test-pkg', detail: 'lite' },
+        annotatedCatalog,
+        null,
+        registry,
+      );
+
+      expect(result.isError).toBe(false);
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.tools).toHaveLength(3);
+
+      const listTool = parsed.tools.find((t: any) => t.tool_id === 'test-pkg__list_contacts');
+      expect(listTool.annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
+
+      const deleteTool = parsed.tools.find((t: any) => t.tool_id === 'test-pkg__delete_contact');
+      expect(deleteTool.annotations).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
+
+      const searchTool = parsed.tools.find((t: any) => t.tool_id === 'test-pkg__search_email');
+      expect(searchTool.annotations).toBeUndefined();
+    });
+
+    it('annotations are forwarded with detail: "full"', async () => {
+      const annotatedCatalog = createMockCatalog(annotatedTools);
+      const result = await handleListTools(
+        { package_id: 'test-pkg', detail: 'full' },
+        annotatedCatalog,
+        null,
+        registry,
+      );
+
+      expect(result.isError).toBe(false);
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.tools).toHaveLength(3);
+
+      const listTool = parsed.tools.find((t: any) => t.tool_id === 'test-pkg__list_contacts');
+      expect(listTool.annotations).toEqual({ readOnlyHint: true, destructiveHint: false });
+      // Full mode also has schema and summary
+      expect(listTool.schema).toBeDefined();
+      expect(listTool.summary).toBeTruthy();
+
+      const deleteTool = parsed.tools.find((t: any) => t.tool_id === 'test-pkg__delete_contact');
+      expect(deleteTool.annotations).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true });
+
+      const searchTool = parsed.tools.find((t: any) => t.tool_id === 'test-pkg__search_email');
+      expect(searchTool.annotations).toBeUndefined();
+    });
+
+    it('tools without annotations produce annotations: undefined (not empty object)', async () => {
+      const noAnnotationTools = [
+        makeTool('basic_tool', { description: 'A basic tool' }),
+      ];
+      const noAnnotationCatalog = createMockCatalog(noAnnotationTools);
+
+      const result = await handleListTools(
+        { package_id: 'test-pkg', detail: 'full' },
+        noAnnotationCatalog,
+        null,
+        registry,
+      );
+
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.tools).toHaveLength(1);
+      expect(parsed.tools[0].annotations).toBeUndefined();
+      expect('annotations' in parsed.tools[0]).toBe(false);
     });
   });
 });

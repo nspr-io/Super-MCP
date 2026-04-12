@@ -133,6 +133,14 @@ export interface ToolInfo {
   args_skeleton?: any;
   schema_hash: string;
   schema?: any;
+  /** MCP spec tool annotations (behavioral hints from upstream server) */
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+  };
   blocked?: boolean;
   blocked_reason?: string;
   /** True if this tool was disabled by user preference (separate from security policy) */
@@ -193,6 +201,14 @@ export interface UseToolOutput {
     original_output_chars?: number;
     result_id?: string;
     materialized?: boolean;
+  };
+  /** Connector tool's MCP spec annotations (behavioral hints for retry decisions) */
+  annotations?: {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
   };
 }
 
