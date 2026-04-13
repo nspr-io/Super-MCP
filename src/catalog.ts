@@ -86,6 +86,10 @@ export class Catalog {
 
       const packageEtag = `sha256:${Buffer.from(JSON.stringify(cachedTools)).toString('hex').slice(0, 16)}`;
 
+      // Clear stale resource URI mappings before re-registering
+      this.clearResourceUrisForPackage(packageId);
+      this.registerResourceUris(packageId, tools);
+
       this.cache.set(packageId, {
         packageId,
         tools: cachedTools,
@@ -110,6 +114,9 @@ export class Catalog {
       });
 
       const { status, etag, lastError } = this.categorizeError(packageId, error);
+
+      // Clear stale resource URI mappings — package is no longer healthy
+      this.clearResourceUrisForPackage(packageId);
 
       this.cache.set(packageId, {
         packageId,
@@ -300,12 +307,14 @@ export class Catalog {
 
   clear(): void {
     logger.debug("Clearing catalog cache");
+    this.resourceUriToPackage.clear();
     this.cache.clear();
     this.updateGlobalEtag();
   }
 
   clearPackage(packageId: string): void {
     logger.debug("Clearing package cache", { package_id: packageId });
+    this.clearResourceUrisForPackage(packageId);
     this.cache.delete(packageId);
     this.updateGlobalEtag();
   }

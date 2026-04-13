@@ -694,11 +694,11 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
     });
 
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      const { uri } = request.params;
+      const { uri, _meta } = request.params;
       logger.info("Handling resources/read request", { uri });
       
       try {
-        const result = await handleReadResource({ uri }, registry, catalog);
+        const result = await handleReadResource({ uri, _meta }, registry, catalog);
         // Cast to satisfy MCP SDK type requirements
         return result as unknown as { contents: Array<{ uri: string; mimeType?: string; text?: string; blob?: string }> };
       } catch (error) {
