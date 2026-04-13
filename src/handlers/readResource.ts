@@ -30,7 +30,7 @@ export async function handleReadResource(
       packageId = hintedPackageId;
       logger.debug("Resolved package from _meta.rebel_packageId hint", { uri, package_id: packageId });
     } else {
-      logger.warn({ uri, hinted_id: hintedPackageId }, "_meta.rebel_packageId hint does not match any registered package, falling through to Strategy 1/2");
+      logger.warn("_meta.rebel_packageId hint does not match any registered package, falling through to Strategy 1/2", { uri, hinted_id: hintedPackageId });
     }
   }
 
