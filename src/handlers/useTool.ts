@@ -98,6 +98,11 @@ const DEFAULT_MAX_OUTPUT_CHARS = 100_000;
 // Separate from DEFAULT_MAX_OUTPUT_CHARS (100K) which drives truncation + continuation chunk size.
 // With auto-materialization, data isn't lost — it's saved to .rebel/tool-outputs/ for Read/Grep access.
 const MATERIALIZATION_THRESHOLD_CHARS = 20_000;
+
+// Safety net threshold: if serialized output exceeds this after all truncation,
+// replace with placeholder + continuation. Set above the default truncation limit
+// to allow envelope overhead, but with a minimum floor for small custom limits.
+const SERIALIZED_OUTPUT_SAFETY_NET_FLOOR = 200_000;
 const MAX_SCHEMA_FRAGMENTS = 5;
 const FULL_SCHEMA_FRAGMENT_KEY = "__full_schema";
 const FULL_SCHEMA_THRESHOLD = 2;
@@ -904,31 +909,41 @@ export async function handleUseTool(
     // (e.g., non-text content blocks with large base64 data survived text truncation),
     // replace result with compact placeholder and trigger continuation. The JSON envelope
     // must remain valid (parseable) — downstream consumers parse the leading JSON.
-    if (effectiveLimit !== undefined && outputJson.length > effectiveLimit * 2) {
-      const fullOutputForCache = outputJson;
-      const safetyNetResultId = randomUUID();
-      cacheResult(safetyNetResultId, fullOutputForCache);
+    const safetyNetThreshold = Math.max(effectiveLimit !== undefined ? effectiveLimit + effectiveLimit : 0, SERIALIZED_OUTPUT_SAFETY_NET_FLOOR);
+    if (effectiveLimit !== undefined && outputJson.length > safetyNetThreshold) {
+      const originalOutputLength = outputJson.length;
+
+      // If wasTruncated already cached the full untruncated output, reuse that result_id
+      // to avoid orphan cache entries and enable direct one-hop recovery.
+      const existingResultId = wasTruncated ? result.telemetry.result_id as string : undefined;
+      const continuationResultId = existingResultId ?? randomUUID();
+      if (!existingResultId) {
+        cacheResult(continuationResultId, outputJson);
+      }
 
       // Replace oversized result content with compact placeholder (keeps envelope parseable)
       result.result = {
         status: "oversized_output",
-        message: `Output (${fullOutputForCache.length.toLocaleString()} chars) exceeds context budget. Use continuation to retrieve.`,
-        original_chars: fullOutputForCache.length,
-        result_id: safetyNetResultId,
+        message: `Output (${originalOutputLength.toLocaleString()} chars) exceeds context budget. Use continuation to retrieve.`,
+        original_chars: originalOutputLength,
+        result_id: continuationResultId,
       };
       result.telemetry.output_truncated = true;
-      result.telemetry.original_output_chars = fullOutputForCache.length;
-      result.telemetry.result_id = safetyNetResultId;
+      result.telemetry.original_output_chars = originalOutputLength;
+      result.telemetry.result_id = continuationResultId;
 
       outputJson = JSON.stringify(result, null, 2);
-      outputJson += `\n\n[Output too large for context (${fullOutputForCache.length.toLocaleString()} chars). To retrieve the full result: use_tool({ package_id: "${package_id}", tool_id: "${tool_id}", args: {}, result_id: "${safetyNetResultId}", output_offset: 0 })]`;
+      result.telemetry.output_chars = outputJson.length;
+      outputJson = JSON.stringify(result, null, 2);
+      outputJson += `\n\n[Output too large for context (${originalOutputLength.toLocaleString()} chars). To retrieve the full result: use_tool({ package_id: "${package_id}", tool_id: "${tool_id}", args: {}, result_id: "${continuationResultId}", output_offset: 0 })]`;
 
       logger.warn("Serialized output exceeded context budget — replaced with placeholder", {
         event: "serialized_output_safety_net",
         package_id,
         tool_id,
-        original_chars: fullOutputForCache.length,
+        original_chars: originalOutputLength,
         effective_limit: effectiveLimit,
+        reused_truncation_id: !!existingResultId,
       });
     }
 

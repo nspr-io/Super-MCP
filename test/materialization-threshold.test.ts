@@ -292,6 +292,22 @@ describe("Materialization threshold decoupling", () => {
     // Continuation hint appended with the safety-net result_id
     expect(responseText).toContain("[Output too large for context");
     expect(responseText).toContain(`result_id: "${responseData.result.result_id}"`);
+
+    // The continuation result_id should point to the FULL UNTRUNCATED output (one-hop
+    // recovery, not two-hop). Verify by calling continuation and checking the total
+    // cached size includes both the original text AND the image data.
+    const contResult = await handleUseTool(
+      { package_id: "pkg1", tool_id: "tool1", args: {}, result_id: responseData.result.result_id, output_offset: 0 },
+      mockRegistry,
+      mockCatalog,
+      mockValidator,
+    );
+    expect(contResult.isError).toBe(false);
+    const contJson = contResult.content[0].text.split("\n\n[")[0];
+    const contData = JSON.parse(contJson);
+    expect(contData.continuation).toBe(true);
+    // The total cached output should be > 1MB (full image + full text, not truncated)
+    expect(contData.total_chars).toBeGreaterThan(1_000_000);
   });
 
   it("S2-T3: normal-sized output below threshold -> safety net does NOT trigger", async () => {
