@@ -293,14 +293,17 @@ describe("materializeOutput", () => {
     expect(result).toBeNull(); // Small resource_link is below the limit
   });
 
-  it("T24: Image below materialisation threshold -> NOT materialized (returns null)", async () => {
+  it("T24: Image below materialisation threshold -> STILL materialized (images always save)", async () => {
     const base64Data = "A".repeat(100); // Small image, ~100 chars
     const toolResult = {
       content: [{ type: "image", data: base64Data, mimeType: "image/png" }],
       isError: false,
     };
     const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, tempWorkspace, 20_000);
-    expect(result).toBeNull(); // Small image (below 20K threshold) should not materialize
+    // Images are always materialized regardless of size threshold
+    expect(result).not.toBeNull();
+    expect(result!.result.image_files).toBeDefined();
+    expect(result!.result.image_files.length).toBe(1);
   });
 
   it("T25: Non-text content with empty workspace path -> returns null", async () => {

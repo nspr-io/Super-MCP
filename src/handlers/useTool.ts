@@ -8,7 +8,7 @@ import { getLogger } from "../logging.js";
 import { getSecurityPolicy } from "../security.js";
 import { findBestMatch } from "../utils/fuzzyMatch.js";
 import { coerceStringifiedJson, coerceStringifiedBoolean, coerceStringifiedNumber } from "../utils/normalizeInput.js";
-import { materializeOutput } from "./materializeOutput.js";
+import { materializeOutput, extractImageContentBlocks } from "./materializeOutput.js";
 
 const logger = getLogger();
 
@@ -786,7 +786,7 @@ export async function handleUseTool(
   const startTime = Date.now();
   try {
     const client = await registry.getClient(package_id);
-    const toolResult = await client.callTool(tool_id, args);
+    let toolResult = await client.callTool(tool_id, args);
     registry.notifyActivity(package_id);
     const duration = Date.now() - startTime;
 
@@ -817,8 +817,22 @@ export async function handleUseTool(
           if (cachedTool?.tool?.annotations) {
             matResult.annotations = cachedTool.tool.annotations;
           }
+
+          const imageBlocks = extractImageContentBlocks(toolResult);
+
+          if (typeof matResult.result?.preserved_text === "string" && effectiveLimit !== undefined) {
+            const preservedText = matResult.result.preserved_text;
+            if (preservedText.length > effectiveLimit) {
+              matResult.result.preserved_text = `${preservedText.slice(0, effectiveLimit)}\n\n[Preserved text truncated to ${effectiveLimit} chars]`;
+            }
+          }
+
+          const envelopeJson = JSON.stringify(matResult, null, 2);
           return {
-            content: [{ type: "text", text: JSON.stringify(matResult, null, 2) }],
+            content: [
+              { type: "text", text: envelopeJson },
+              ...imageBlocks,
+            ],
             isError: false,
           };
         }
@@ -828,6 +842,25 @@ export async function handleUseTool(
           package_id,
           tool_id
         });
+      }
+    }
+
+    // Strip image blocks from tool results before JSON serialization.
+    // Always strip (even errors) to prevent base64 inflation of outputJson.
+    // Only pass images through to response for successful results.
+    let passthroughImages: ReturnType<typeof extractImageContentBlocks> = [];
+    if (isRecord(toolResult) && Array.isArray(toolResult.content)) {
+      const extracted = extractImageContentBlocks(toolResult);
+      if (extracted.length > 0) {
+        if (toolResult.isError !== true) {
+          passthroughImages = extracted;
+        }
+        toolResult = {
+          ...toolResult,
+          content: toolResult.content.filter(
+            (block) => !isRecord(block) || block.type !== "image",
+          ),
+        };
       }
     }
 
@@ -955,6 +988,7 @@ export async function handleUseTool(
           type: "text",
           text: outputJson,
         },
+        ...passthroughImages,
       ],
       isError: false,
     };

@@ -210,12 +210,12 @@ describe("Materialization threshold decoupling", () => {
     expect(contData.length).toBeLessThanOrEqual(100_000);
   });
 
-  // --- Serialized-output-size safety net tests (Stage 2) ---
-  // These verify the final safety net in useTool.ts that catches oversized outputs
-  // (e.g., non-text content blocks with large base64 data) after all other truncation
-  // logic has run. The envelope must remain valid JSON for downstream consumers.
+  // --- Serialized-output-size behavior with image passthrough ---
+  // Image blocks are stripped from the JSON envelope and returned as separate MCP
+  // content blocks. This prevents base64 data from inflating outputJson and avoids
+  // safety-net clobbering.
 
-  it("S2-T1: no workspace + large image content (1MB base64) -> safety net triggers, envelope is valid JSON", async () => {
+  it("S2-T1: no workspace + large image content (1MB base64) -> image stripped from envelope and passed through separately", async () => {
     delete process.env.REBEL_WORKSPACE_PATH;
 
     const base64Data = "A".repeat(1_000_000);
@@ -238,24 +238,18 @@ describe("Materialization threshold decoupling", () => {
     const jsonPart = responseText.split("\n\n[")[0];
     const responseData = JSON.parse(jsonPart);
 
-    // Safety net replaced the oversized result with a compact placeholder
-    expect(responseData.result.status).toBe("oversized_output");
-    expect(responseData.result.result_id).toBeTruthy();
-    expect(typeof responseData.result.result_id).toBe("string");
-    expect(responseData.result.original_chars).toBeGreaterThan(1_000_000);
-    expect(responseData.result.message).toContain("continuation");
-
-    // Telemetry flags reflect truncation + continuation
-    expect(responseData.telemetry.output_truncated).toBe(true);
-    expect(responseData.telemetry.result_id).toBe(responseData.result.result_id);
-    expect(responseData.telemetry.original_output_chars).toBeGreaterThan(1_000_000);
-
-    // Continuation hint references the same result_id
-    expect(responseText).toContain("[Output too large for context");
-    expect(responseText).toContain(`result_id: "${responseData.result.result_id}"`);
+    expect(responseData.result.status).not.toBe("oversized_output");
+    expect(JSON.stringify(responseData)).not.toContain(base64Data);
+    expect(responseData.telemetry.output_truncated).toBeUndefined();
+    expect(result.content).toHaveLength(2);
+    expect(result.content[1]).toEqual({
+      type: "image",
+      data: base64Data,
+      mimeType: "image/png",
+    });
   });
 
-  it("S2-T2: no workspace + mixed text (110K) + image (1MB) -> safety net catches oversized output after text truncation", async () => {
+  it("S2-T2: no workspace + mixed text (110K) + image (1MB) -> text truncation works and image is passed through separately", async () => {
     delete process.env.REBEL_WORKSPACE_PATH;
 
     const textContent = "x".repeat(110_000);
@@ -282,22 +276,21 @@ describe("Materialization threshold decoupling", () => {
     const jsonPart = responseText.split("\n\n[")[0];
     const responseData = JSON.parse(jsonPart);
 
-    // Text truncation happened first (wasTruncated=true path), then the safety net
-    // replaced the still-oversized output (due to the 1MB image block)
-    expect(responseData.result.status).toBe("oversized_output");
-    expect(responseData.result.result_id).toBeTruthy();
+    expect(responseData.result.status).not.toBe("oversized_output");
     expect(responseData.telemetry.output_truncated).toBe(true);
-    expect(responseData.telemetry.result_id).toBe(responseData.result.result_id);
+    expect(responseData.telemetry.result_id).toBeTruthy();
+    expect(responseText).not.toContain("[Output too large for context");
+    expect(JSON.stringify(responseData)).not.toContain(base64Data);
+    expect(result.content[1]).toEqual({
+      type: "image",
+      data: base64Data,
+      mimeType: "image/png",
+    });
 
-    // Continuation hint appended with the safety-net result_id
-    expect(responseText).toContain("[Output too large for context");
-    expect(responseText).toContain(`result_id: "${responseData.result.result_id}"`);
-
-    // The continuation result_id should point to the FULL UNTRUNCATED output (one-hop
-    // recovery, not two-hop). Verify by calling continuation and checking the total
-    // cached size includes both the original text AND the image data.
+    // Continuation cache should include the full untruncated text output
+    // while image data remains out-of-band.
     const contResult = await handleUseTool(
-      { package_id: "pkg1", tool_id: "tool1", args: {}, result_id: responseData.result.result_id, output_offset: 0 },
+      { package_id: "pkg1", tool_id: "tool1", args: {}, result_id: responseData.telemetry.result_id, output_offset: 0 },
       mockRegistry,
       mockCatalog,
       mockValidator,
@@ -306,8 +299,8 @@ describe("Materialization threshold decoupling", () => {
     const contJson = contResult.content[0].text.split("\n\n[")[0];
     const contData = JSON.parse(contJson);
     expect(contData.continuation).toBe(true);
-    // The total cached output should be > 1MB (full image + full text, not truncated)
-    expect(contData.total_chars).toBeGreaterThan(1_000_000);
+    expect(contData.total_chars).toBeGreaterThan(100_000);
+    expect(contData.total_chars).toBeLessThan(1_000_000);
   });
 
   it("S2-T3: normal-sized output below threshold -> safety net does NOT trigger", async () => {
