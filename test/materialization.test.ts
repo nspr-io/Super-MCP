@@ -189,9 +189,127 @@ describe("materializeOutput", () => {
     expect(result).toBeNull();
   });
 
-  it("T19: Blob/binary content type -> falls back to continuation", async () => {
-    const text = "A".repeat(150_000);
-    const result = await materializeOutput("pkg1", "tool1", {}, createToolResult(text, "image"), 100, tempWorkspace, 100_000);
-    expect(result).toBeNull();
+  it("T19: Non-text image content -> materializes as JSON file", async () => {
+    const base64Data = "A".repeat(25_000); // 25K+ chars base64
+    const toolResult = {
+      content: [{ type: "image", data: base64Data, mimeType: "image/png" }],
+      isError: false,
+    };
+    const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, tempWorkspace, 20_000);
+
+    expect(result).not.toBeNull();
+    expect(result?.result.status).toBe("materialized");
+    expect(result?.result.file_path).toMatch(/\.json$/);
+
+    const content = await fs.readFile(path.join(tempWorkspace, result!.result.file_path as string), "utf8");
+    const parsed = JSON.parse(content);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].type).toBe("image");
+    expect(parsed[0].data).toBe(base64Data);
+    expect(parsed[0].mimeType).toBe("image/png");
+  });
+
+  it("T20: Mixed text+image content -> materializes as JSON file with both blocks", async () => {
+    const textContent = "Description of the image: ";
+    const base64Data = "A".repeat(25_000);
+    const toolResult = {
+      content: [
+        { type: "text", text: textContent },
+        { type: "image", data: base64Data, mimeType: "image/png" },
+      ],
+      isError: false,
+    };
+    const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, tempWorkspace, 20_000);
+
+    expect(result).not.toBeNull();
+    expect(result?.result.status).toBe("materialized");
+    expect(result?.result.file_path).toMatch(/\.json$/);
+
+    const content = await fs.readFile(path.join(tempWorkspace, result!.result.file_path as string), "utf8");
+    const parsed = JSON.parse(content);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0].type).toBe("text");
+    expect(parsed[0].text).toBe(textContent);
+    expect(parsed[1].type).toBe("image");
+    expect(parsed[1].data).toBe(base64Data);
+    expect(parsed[1].mimeType).toBe("image/png");
+  });
+
+  it("T21: Audio content block -> materializes as JSON file", async () => {
+    const base64Data = "B".repeat(25_000);
+    const toolResult = {
+      content: [{ type: "audio", data: base64Data, mimeType: "audio/mp3" }],
+      isError: false,
+    };
+    const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, tempWorkspace, 20_000);
+
+    expect(result).not.toBeNull();
+    expect(result?.result.status).toBe("materialized");
+    expect(result?.result.file_path).toMatch(/\.json$/);
+
+    const content = await fs.readFile(path.join(tempWorkspace, result!.result.file_path as string), "utf8");
+    const parsed = JSON.parse(content);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].type).toBe("audio");
+    expect(parsed[0].data).toBe(base64Data);
+    expect(parsed[0].mimeType).toBe("audio/mp3");
+  });
+
+  it("T22: EmbeddedResource content -> materializes as JSON file", async () => {
+    const resourceText = "C".repeat(25_000);
+    const toolResult = {
+      content: [
+        {
+          type: "resource",
+          resource: { uri: "file:///test.txt", text: resourceText },
+        },
+      ],
+      isError: false,
+    };
+    const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, tempWorkspace, 20_000);
+
+    expect(result).not.toBeNull();
+    expect(result?.result.status).toBe("materialized");
+    expect(result?.result.file_path).toMatch(/\.json$/);
+
+    const content = await fs.readFile(path.join(tempWorkspace, result!.result.file_path as string), "utf8");
+    const parsed = JSON.parse(content);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].type).toBe("resource");
+    expect(parsed[0].resource.uri).toBe("file:///test.txt");
+    expect(parsed[0].resource.text).toBe(resourceText);
+  });
+
+  it("T23: ResourceLink below threshold -> NOT materialized (returns null)", async () => {
+    const toolResult = {
+      content: [{ type: "resource_link", uri: "https://example.com", name: "test" }],
+      isError: false,
+    };
+    const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, tempWorkspace, 20_000);
+    expect(result).toBeNull(); // Small resource_link is below the limit
+  });
+
+  it("T24: Image below materialisation threshold -> NOT materialized (returns null)", async () => {
+    const base64Data = "A".repeat(100); // Small image, ~100 chars
+    const toolResult = {
+      content: [{ type: "image", data: base64Data, mimeType: "image/png" }],
+      isError: false,
+    };
+    const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, tempWorkspace, 20_000);
+    expect(result).toBeNull(); // Small image (below 20K threshold) should not materialize
+  });
+
+  it("T25: Non-text content with empty workspace path -> returns null", async () => {
+    const base64Data = "A".repeat(25_000);
+    const toolResult = {
+      content: [{ type: "image", data: base64Data, mimeType: "image/png" }],
+      isError: false,
+    };
+    const result = await materializeOutput("pkg1", "tool1", {}, toolResult, 100, "", 20_000);
+    expect(result).toBeNull(); // No workspace path -> graceful degradation
   });
 });

@@ -900,6 +900,38 @@ export async function handleUseTool(
       outputJson = JSON.stringify(result, null, 2);
     }
 
+    // Final safety net: if serialized output is still oversized after all truncation
+    // (e.g., non-text content blocks with large base64 data survived text truncation),
+    // replace result with compact placeholder and trigger continuation. The JSON envelope
+    // must remain valid (parseable) — downstream consumers parse the leading JSON.
+    if (effectiveLimit !== undefined && outputJson.length > effectiveLimit * 2) {
+      const fullOutputForCache = outputJson;
+      const safetyNetResultId = randomUUID();
+      cacheResult(safetyNetResultId, fullOutputForCache);
+
+      // Replace oversized result content with compact placeholder (keeps envelope parseable)
+      result.result = {
+        status: "oversized_output",
+        message: `Output (${fullOutputForCache.length.toLocaleString()} chars) exceeds context budget. Use continuation to retrieve.`,
+        original_chars: fullOutputForCache.length,
+        result_id: safetyNetResultId,
+      };
+      result.telemetry.output_truncated = true;
+      result.telemetry.original_output_chars = fullOutputForCache.length;
+      result.telemetry.result_id = safetyNetResultId;
+
+      outputJson = JSON.stringify(result, null, 2);
+      outputJson += `\n\n[Output too large for context (${fullOutputForCache.length.toLocaleString()} chars). To retrieve the full result: use_tool({ package_id: "${package_id}", tool_id: "${tool_id}", args: {}, result_id: "${safetyNetResultId}", output_offset: 0 })]`;
+
+      logger.warn("Serialized output exceeded context budget — replaced with placeholder", {
+        event: "serialized_output_safety_net",
+        package_id,
+        tool_id,
+        original_chars: fullOutputForCache.length,
+        effective_limit: effectiveLimit,
+      });
+    }
+
     resetValidationAttempt(downstreamValidationAttemptKey);
 
     return {

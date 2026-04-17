@@ -209,4 +209,112 @@ describe("Materialization threshold decoupling", () => {
     expect(contData.length).toBeGreaterThan(20_000);
     expect(contData.length).toBeLessThanOrEqual(100_000);
   });
+
+  // --- Serialized-output-size safety net tests (Stage 2) ---
+  // These verify the final safety net in useTool.ts that catches oversized outputs
+  // (e.g., non-text content blocks with large base64 data) after all other truncation
+  // logic has run. The envelope must remain valid JSON for downstream consumers.
+
+  it("S2-T1: no workspace + large image content (1MB base64) -> safety net triggers, envelope is valid JSON", async () => {
+    delete process.env.REBEL_WORKSPACE_PATH;
+
+    const base64Data = "A".repeat(1_000_000);
+    const mockToolResult = {
+      content: [{ type: "image", data: base64Data, mimeType: "image/png" }],
+    };
+    const { mockRegistry, mockCatalog, mockValidator } = createMocks(mockToolResult);
+
+    const result = await handleUseTool(
+      { package_id: "pkg1", tool_id: "tool1", args: {} },
+      mockRegistry,
+      mockCatalog,
+      mockValidator,
+    );
+
+    expect(result.isError).toBe(false);
+    const responseText = result.content[0].text;
+
+    // Leading JSON envelope must remain parseable (continuation hint is appended after \n\n[)
+    const jsonPart = responseText.split("\n\n[")[0];
+    const responseData = JSON.parse(jsonPart);
+
+    // Safety net replaced the oversized result with a compact placeholder
+    expect(responseData.result.status).toBe("oversized_output");
+    expect(responseData.result.result_id).toBeTruthy();
+    expect(typeof responseData.result.result_id).toBe("string");
+    expect(responseData.result.original_chars).toBeGreaterThan(1_000_000);
+    expect(responseData.result.message).toContain("continuation");
+
+    // Telemetry flags reflect truncation + continuation
+    expect(responseData.telemetry.output_truncated).toBe(true);
+    expect(responseData.telemetry.result_id).toBe(responseData.result.result_id);
+    expect(responseData.telemetry.original_output_chars).toBeGreaterThan(1_000_000);
+
+    // Continuation hint references the same result_id
+    expect(responseText).toContain("[Output too large for context");
+    expect(responseText).toContain(`result_id: "${responseData.result.result_id}"`);
+  });
+
+  it("S2-T2: no workspace + mixed text (110K) + image (1MB) -> safety net catches oversized output after text truncation", async () => {
+    delete process.env.REBEL_WORKSPACE_PATH;
+
+    const textContent = "x".repeat(110_000);
+    const base64Data = "A".repeat(1_000_000);
+    const mockToolResult = {
+      content: [
+        { type: "text", text: textContent },
+        { type: "image", data: base64Data, mimeType: "image/png" },
+      ],
+    };
+    const { mockRegistry, mockCatalog, mockValidator } = createMocks(mockToolResult);
+
+    const result = await handleUseTool(
+      { package_id: "pkg1", tool_id: "tool1", args: {} },
+      mockRegistry,
+      mockCatalog,
+      mockValidator,
+    );
+
+    expect(result.isError).toBe(false);
+    const responseText = result.content[0].text;
+
+    // Leading JSON envelope must remain parseable
+    const jsonPart = responseText.split("\n\n[")[0];
+    const responseData = JSON.parse(jsonPart);
+
+    // Text truncation happened first (wasTruncated=true path), then the safety net
+    // replaced the still-oversized output (due to the 1MB image block)
+    expect(responseData.result.status).toBe("oversized_output");
+    expect(responseData.result.result_id).toBeTruthy();
+    expect(responseData.telemetry.output_truncated).toBe(true);
+    expect(responseData.telemetry.result_id).toBe(responseData.result.result_id);
+
+    // Continuation hint appended with the safety-net result_id
+    expect(responseText).toContain("[Output too large for context");
+    expect(responseText).toContain(`result_id: "${responseData.result.result_id}"`);
+  });
+
+  it("S2-T3: normal-sized output below threshold -> safety net does NOT trigger", async () => {
+    delete process.env.REBEL_WORKSPACE_PATH;
+
+    // Well-within budget: small text block, no large non-text content.
+    const mockToolResult = { content: [{ type: "text", text: "hello world" }] };
+    const { mockRegistry, mockCatalog, mockValidator } = createMocks(mockToolResult);
+
+    const result = await handleUseTool(
+      { package_id: "pkg1", tool_id: "tool1", args: {} },
+      mockRegistry,
+      mockCatalog,
+      mockValidator,
+    );
+
+    expect(result.isError).toBe(false);
+    const responseData = JSON.parse(result.content[0].text);
+
+    // Normal path: no oversized_output placeholder, no truncation flags
+    expect(responseData.result.status).not.toBe("oversized_output");
+    expect(responseData.result).toEqual(mockToolResult);
+    expect(responseData.telemetry.output_truncated).toBeUndefined();
+    expect(responseData.telemetry.result_id).toBeUndefined();
+  });
 });

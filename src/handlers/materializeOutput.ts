@@ -14,20 +14,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function extractDataForMaterialization(toolResult: unknown): { data: unknown, isStringText: boolean, isError: boolean, hasBlob: boolean } {
+function extractDataForMaterialization(toolResult: unknown): { data: unknown, isStringText: boolean, isError: boolean } {
   let isError = false;
-  let hasBlob = false;
   if (isRecord(toolResult)) {
     if (toolResult.isError) isError = true;
     if (Array.isArray(toolResult.content)) {
-      hasBlob = toolResult.content.some((block: any) => block.type !== "text");
       if (toolResult.content.length === 1 && isRecord(toolResult.content[0]) && toolResult.content[0].type === "text" && typeof toolResult.content[0].text === "string") {
-        return { data: toolResult.content[0].text, isStringText: true, isError, hasBlob };
+        return { data: toolResult.content[0].text, isStringText: true, isError };
       }
-      return { data: toolResult.content, isStringText: false, isError, hasBlob };
+      return { data: toolResult.content, isStringText: false, isError };
     }
   }
-  return { data: toolResult, isStringText: false, isError, hasBlob };
+  return { data: toolResult, isStringText: false, isError };
 }
 
 export async function materializeOutput(
@@ -43,11 +41,7 @@ export async function materializeOutput(
     return null;
   }
 
-  const { data, isStringText, hasBlob } = extractDataForMaterialization(toolResult);
-
-  if (hasBlob) {
-    return null; // T19: Blob/binary content type -> falls back to continuation
-  }
+  const { data, isStringText } = extractDataForMaterialization(toolResult);
 
   let isJson = !isStringText;
   let parsedData = data;
