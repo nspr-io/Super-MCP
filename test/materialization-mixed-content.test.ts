@@ -33,6 +33,14 @@ describe("materializeOutput mixed-content behavior", () => {
     data,
     mimeType,
   });
+  const createResourceImageBlock = (
+    blob = TINY_PNG_BASE64,
+    mimeType = "image/png",
+    uri = "file:///img.png",
+  ) => ({
+    type: "resource" as const,
+    resource: { uri, mimeType, blob },
+  });
 
   const runMaterialize = (toolResult: unknown, limit = 100_000) =>
     materializeOutput("pkg1", "tool1", { a: 1 }, toolResult, 100, tempWorkspace, limit);
@@ -399,6 +407,80 @@ describe("materializeOutput mixed-content behavior", () => {
     expect(preservedText).toContain("[Preserved text truncated to 1000 chars]");
     expect(preservedText.length).toBeLessThan(longText.length);
     expect(response.content[1]).toEqual({
+      type: "image",
+      data: TINY_PNG_BASE64,
+      mimeType: "image/png",
+    });
+  });
+
+  it("MC-T16: Resource-wrapped image extracted by extractImageContentBlocks", () => {
+    const extracted = extractImageContentBlocks({
+      content: [createResourceImageBlock(TINY_PNG_BASE64, "image/png", "file:///img.png")],
+      isError: false,
+    });
+
+    expect(extracted).toEqual([
+      {
+        type: "image",
+        data: TINY_PNG_BASE64,
+        mimeType: "image/png",
+      },
+    ]);
+  });
+
+  it("MC-T17: Resource-wrapped image materialises and saves binary file", async () => {
+    const toolResult = {
+      content: [
+        { type: "text", text: "Saved to: path.png" },
+        createResourceImageBlock(TINY_PNG_BASE64, "image/png", "file:///img.png"),
+      ],
+      isError: false,
+    };
+
+    const result = await runMaterialize(toolResult, 1);
+    expect(result).not.toBeNull();
+    expect(result?.result.preserved_text).toBe("Saved to: path.png");
+    expect(result?.result.image_files).toHaveLength(1);
+
+    const savedImagePath = path.join(tempWorkspace, result!.result.image_files[0]);
+    const savedImage = await fs.readFile(savedImagePath);
+    expect([...savedImage.subarray(0, 8)]).toEqual(PNG_SIGNATURE);
+  });
+
+  it("MC-T18: Resource with non-image mimeType NOT extracted as image", () => {
+    const extracted = extractImageContentBlocks({
+      content: [
+        {
+          type: "resource",
+          resource: {
+            uri: "file:///doc.txt",
+            mimeType: "text/plain",
+            text: "hello",
+          },
+        },
+      ],
+      isError: false,
+    });
+
+    expect(extracted).toEqual([]);
+  });
+
+  it("MC-T19: Mixed direct image + resource image", () => {
+    const extracted = extractImageContentBlocks({
+      content: [
+        createImageBlock(TINY_PNG_BASE64, "image/png"),
+        createResourceImageBlock(TINY_PNG_BASE64, "image/png", "file:///img2.png"),
+      ],
+      isError: false,
+    });
+
+    expect(extracted).toHaveLength(2);
+    expect(extracted[0]).toEqual({
+      type: "image",
+      data: TINY_PNG_BASE64,
+      mimeType: "image/png",
+    });
+    expect(extracted[1]).toEqual({
       type: "image",
       data: TINY_PNG_BASE64,
       mimeType: "image/png",

@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { UseToolOutput } from "../types.js";
 import { getLogger } from "../logging.js";
 
-const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
+export const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"]);
 const MAX_SAVE_IMAGES = 5;
 const MAX_SAVE_IMAGE_BYTES = 10 * 1024 * 1024; // 10MB total base64
 const MIME_TO_EXT: Record<string, string> = {
@@ -75,38 +75,71 @@ export function extractImageContentBlocks(toolResult: unknown): ImageContentBloc
   let droppedForCount = 0;
 
   for (const block of toolResult.content) {
-    if (!isRecord(block) || block.type !== "image") {
-      continue;
-    }
-    if (typeof block.data !== "string" || typeof block.mimeType !== "string") {
+    if (!isRecord(block)) {
       continue;
     }
 
-    if (imageBlocks.length >= MAX_SAVE_IMAGES) {
-      droppedForCount += 1;
-      continue;
-    }
+    if (block.type === "image") {
+      if (typeof block.data !== "string" || !block.data || typeof block.mimeType !== "string") {
+        continue;
+      }
 
-    const normalizedMimeType = block.mimeType.toLowerCase();
-    if (!SUPPORTED_IMAGE_MIME_TYPES.has(normalizedMimeType)) {
-      continue;
-    }
+      if (imageBlocks.length >= MAX_SAVE_IMAGES) {
+        droppedForCount += 1;
+        continue;
+      }
 
-    const nextTotalBytes = totalBase64Bytes + block.data.length;
-    if (nextTotalBytes > MAX_SAVE_IMAGE_BYTES) {
-      logger.warn("Image extraction size cap reached; dropping remaining images", {
-        max_save_image_bytes: MAX_SAVE_IMAGE_BYTES,
-        extracted_images: imageBlocks.length,
+      const normalizedMimeType = block.mimeType.toLowerCase();
+      if (!SUPPORTED_IMAGE_MIME_TYPES.has(normalizedMimeType)) {
+        continue;
+      }
+
+      const nextTotalBytes = totalBase64Bytes + block.data.length;
+      if (nextTotalBytes > MAX_SAVE_IMAGE_BYTES) {
+        logger.warn("Image extraction size cap reached; dropping remaining images", {
+          max_save_image_bytes: MAX_SAVE_IMAGE_BYTES,
+          extracted_images: imageBlocks.length,
+        });
+        break;
+      }
+
+      imageBlocks.push({
+        type: "image",
+        data: block.data,
+        mimeType: normalizedMimeType,
       });
-      break;
+      totalBase64Bytes = nextTotalBytes;
+      continue;
     }
 
-    imageBlocks.push({
-      type: "image",
-      data: block.data,
-      mimeType: normalizedMimeType,
-    });
-    totalBase64Bytes = nextTotalBytes;
+    // MCP embedded resource with image blob
+    if (block.type === "resource" && isRecord(block.resource)) {
+      const resource = block.resource as Record<string, unknown>;
+      if (
+        typeof resource.blob === "string" && resource.blob &&
+        typeof resource.mimeType === "string" &&
+        SUPPORTED_IMAGE_MIME_TYPES.has(resource.mimeType.toLowerCase())
+      ) {
+        if (imageBlocks.length >= MAX_SAVE_IMAGES) {
+          droppedForCount += 1;
+          continue;
+        }
+        const nextTotalBytes = totalBase64Bytes + resource.blob.length;
+        if (nextTotalBytes > MAX_SAVE_IMAGE_BYTES) {
+          logger.warn("Image extraction size cap reached; dropping remaining images", {
+            max_save_image_bytes: MAX_SAVE_IMAGE_BYTES,
+            extracted_images: imageBlocks.length,
+          });
+          break;
+        }
+        imageBlocks.push({
+          type: "image",
+          data: resource.blob,
+          mimeType: resource.mimeType.toLowerCase(),
+        });
+        totalBase64Bytes = nextTotalBytes;
+      }
+    }
   }
 
   if (droppedForCount > 0) {

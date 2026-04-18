@@ -8,7 +8,7 @@ import { getLogger } from "../logging.js";
 import { getSecurityPolicy } from "../security.js";
 import { findBestMatch } from "../utils/fuzzyMatch.js";
 import { coerceStringifiedJson, coerceStringifiedBoolean, coerceStringifiedNumber } from "../utils/normalizeInput.js";
-import { materializeOutput, extractImageContentBlocks } from "./materializeOutput.js";
+import { materializeOutput, extractImageContentBlocks, SUPPORTED_IMAGE_MIME_TYPES } from "./materializeOutput.js";
 
 const logger = getLogger();
 
@@ -858,7 +858,20 @@ export async function handleUseTool(
         toolResult = {
           ...toolResult,
           content: toolResult.content.filter(
-            (block) => !isRecord(block) || block.type !== "image",
+            (block) => {
+              if (!isRecord(block)) return true;
+              // Strip direct image blocks
+              if (block.type === "image") return false;
+              // Strip resource blocks whose image blob was extracted
+              if (block.type === "resource" && isRecord(block.resource)) {
+                const r = block.resource as Record<string, unknown>;
+                if (typeof r.blob === "string" && r.blob && typeof r.mimeType === "string"
+                  && SUPPORTED_IMAGE_MIME_TYPES.has((r.mimeType as string).toLowerCase())) {
+                  return false;
+                }
+              }
+              return true;
+            },
           ),
         };
       }
