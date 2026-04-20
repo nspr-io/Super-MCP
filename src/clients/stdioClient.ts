@@ -146,10 +146,52 @@ export class StdioMcpClient implements McpClient {
   }
 
   async connect(): Promise<void> {
+    // Workspace propagation contract for stdio MCP subprocesses.
+    // Super-mcp owns the MCP_WORKSPACE_PATH key on this router boundary, in
+    // line with the OSS connector convention (see
+    // docs/project/MCP_SERVER_STANDARD.md, which forbids OSS connectors from
+    // reading REBEL_WORKSPACE_PATH). Rebel-branded connectors (openai-image)
+    // already set REBEL_WORKSPACE_PATH via their catalog env at
+    // bundledMcpManager.ts; this router does not touch that key, so their
+    // payload passes through unchanged. The read-side accepts either parent
+    // env name (REBEL_ or MCP_) so the eventual D1 parent-env rename is
+    // transparent AT THIS CALL SITE ONLY — other super-mcp code that still
+    // reads REBEL_WORKSPACE_PATH (e.g. handlers/useTool.ts materialization
+    // path) will need separate migration under D1.
+    //
+    // Precedence: first non-empty trimmed value wins. `||` (not `??`) is
+    // deliberate so that an empty REBEL_WORKSPACE_PATH (set by
+    // superMcpHttpManager.ts and cloud-service/src/bootstrap.ts when
+    // coreDirectory is unset) falls through to MCP_WORKSPACE_PATH rather
+    // than short-circuiting.
+    const rebelTrimmed = process.env.REBEL_WORKSPACE_PATH?.trim();
+    const mcpTrimmed = process.env.MCP_WORKSPACE_PATH?.trim();
+    const workspacePath = rebelTrimmed || mcpTrimmed || undefined;
+
+    let mergedEnv: Record<string, string> | undefined = this.config.env;
+    if (workspacePath) {
+      if (
+        this.config.env?.MCP_WORKSPACE_PATH &&
+        this.config.env.MCP_WORKSPACE_PATH !== workspacePath
+      ) {
+        logger.warn("catalog env MCP_WORKSPACE_PATH overridden by router", {
+          package_id: this.packageId,
+          had_catalog_value: true,
+        });
+      }
+      mergedEnv = { ...(this.config.env ?? {}), MCP_WORKSPACE_PATH: workspacePath };
+    }
+
     logger.info("Connecting to stdio MCP", {
       package_id: this.packageId,
       command: this.config.command,
       args: this.config.args,
+      workspace: workspacePath ? 'set' : 'unset',
+    });
+
+    logger.debug("stdio subprocess workspace env (debug only)", {
+      package_id: this.packageId,
+      workspace_path: workspacePath ?? null,
     });
 
     // Workaround: MCP SDK gates windowsHide on isElectron() which checks
@@ -169,7 +211,7 @@ export class StdioMcpClient implements McpClient {
       this.transport = new StdioClientTransport({
         command: this.config.command || "echo",
         args: this.config.args || [],
-        env: this.config.env,
+        env: mergedEnv,
         cwd: this.config.cwd,
       });
 
