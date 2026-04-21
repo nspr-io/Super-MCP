@@ -121,11 +121,12 @@ Some MCP packages require authentication to access their APIs (e.g., Notion, Sla
     tool_discovery: `# Discovering Tools in Super-MCP
 
 ## Understanding Package Structure
-Each package contains related tools:
+Each package contains related tools. The packages available depend on your super-mcp configuration — always call \`list_tool_packages()\` first to see what's actually configured. Do not assume a package is available because you've seen its name in an example; examples are illustrative, not an inventory.
+
+Common package patterns you may encounter (availability depends on config):
 - **filesystem**: File and directory operations
 - **github**: Repository, issue, and PR management
 - **notion-api**: Page and database operations
-- **brave-search**: Web search capabilities
 
 ## Using list_tools Effectively
 \`\`\`

@@ -349,8 +349,8 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
               properties: {
                 package_id: {
                   type: "string",
-                  description: "Package ID from list_tool_packages (e.g., 'filesystem', 'github', 'notion-api')",
-                  examples: ["filesystem", "github", "notion-api", "brave-search"],
+                  description: "Package ID from list_tool_packages (e.g., 'filesystem', 'github', 'notion-api'). Availability depends on your super-mcp config — always verify with list_tool_packages first.",
+                  examples: ["filesystem", "github", "notion-api"],
                 },
                 detail: {
                   type: "string",
