@@ -335,10 +335,15 @@ describe('handleListTools — detail parameter', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Default behavior when no params are provided at all
+  // Default behavior when no params are provided at all.
+  // NOTE: Handler default is `detail: "lite"` since commit 12889cd (2026-04-04,
+  // "fix(ux): Prioritize search_tools over list_tools... Default list_tools
+  // detail to lite"). Before that the default was "full". This test locks in
+  // the current lite default. The explicit "full" branch is covered separately
+  // below to ensure we don't silently lose that coverage.
   // -----------------------------------------------------------------------
 
-  it('defaults to detail: "full" when detail is omitted', async () => {
+  it('defaults to detail: "lite" when detail is omitted', async () => {
     const result = await handleListTools(
       { package_id: 'test-pkg' },
       catalog,
@@ -350,6 +355,33 @@ describe('handleListTools — detail parameter', () => {
     const parsed = JSON.parse(result.content[0].text);
 
     for (const tool of parsed.tools) {
+      // Lite default: no summary, no args_skeleton, no schema — but description still included.
+      expect(tool.summary).toBeUndefined();
+      expect(tool.args_skeleton).toBeUndefined();
+      expect(tool.schema).toBeUndefined();
+      expect(tool.description).toBeTruthy();
+    }
+
+    expect(catalog.buildToolInfos).toHaveBeenCalledWith('test-pkg', {
+      summarize: false,
+      include_schemas: false,
+      include_descriptions: true,
+    });
+  });
+
+  it('emits full tool info when detail: "full" is explicitly requested', async () => {
+    const result = await handleListTools(
+      { package_id: 'test-pkg', detail: 'full' },
+      catalog,
+      null,
+      registry,
+    );
+
+    expect(result.isError).toBe(false);
+    const parsed = JSON.parse(result.content[0].text);
+
+    for (const tool of parsed.tools) {
+      // Full detail: summary + args_skeleton + schema + description all present.
       expect(tool.summary).toBeTruthy();
       expect(tool.args_skeleton).toBeDefined();
       expect(tool.schema).toBeDefined();
