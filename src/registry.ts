@@ -84,6 +84,39 @@ function expandEnvironmentVariables(env?: Record<string, string>, packageId?: st
   return expanded;
 }
 
+/**
+ * Per-child observability snapshot emitted via GET /stats.
+ *
+ * Stage 4b of `docs/plans/260423_secondary_process_cpu_observability.md`:
+ * super-mcp exposes lightweight metadata so Rebel's perf diagnostic can
+ * attribute CPU / behaviour to individual upstream MCP packages without
+ * needing to introspect `process.resourceUsage()` (which is self-only).
+ *
+ * This struct is pure metadata — per-child CPU / RSS sampling lives
+ * in the Rebel side (`subprocessCpuSampler`, future work), fed by
+ * the PIDs reported here.
+ */
+export interface ChildStatsEntry {
+  package_id: string;
+  transport: 'stdio' | 'http';
+  /** OS PID for stdio transports after successful connect; null otherwise. */
+  pid: number | null;
+  /** Whether a client is currently connected for this package. */
+  connected: boolean;
+  /** ms since last `notifyActivity` / connect; null when never touched. */
+  idle_ms: number | null;
+  /** ms epoch of last activity; null when never touched. */
+  last_activity_at: number | null;
+  /** Approximation via optional `McpClient.hasPendingRequests?()`. False when absent. */
+  pending_requests: boolean;
+  /** Cumulative successful `createAndConnectClient()` completions for this package. */
+  spawn_count: number;
+  /** Cumulative idle-reaper closures for this package. */
+  reap_count: number;
+  /** Cumulative non-reap, non-user eviction closures (unhealthy-client replacements). */
+  eviction_count: number;
+}
+
 export class PackageRegistry {
   private config: SuperMcpConfig;
   private packages: PackageConfig[];
@@ -93,6 +126,22 @@ export class PackageRegistry {
   private lastActivity: Map<string, number> = new Map();
   private reaperInterval: ReturnType<typeof setInterval> | null = null;
   private reaperTimeoutMs: number = 300_000; // 5 minutes default
+
+  // ── Stage 4b lifecycle counters ────────────────────────────────────
+  // Cumulative per-package counters backing GET /stats.
+  //
+  // `spawnCounts` — incremented exactly once per successful
+  //   `createAndConnectClient()` completion. The `getOrCreateClient`
+  //   healthCheck-ok revive path does NOT increment (no new client spawned).
+  // `reapCounts` — incremented exactly once per idle-reaper closure
+  //   (`sweepIdleClients`). User-initiated `restartPackage()` and
+  //   unhealthy-client evictions are tracked separately.
+  // `evictionCounts` — incremented when a connected client is discarded
+  //   because `healthCheck()` returned non-ok in `getOrCreateClient()`.
+  //   This is NOT a user-initiated stop and NOT an idle reap.
+  private spawnCounts: Map<string, number> = new Map();
+  private reapCounts: Map<string, number> = new Map();
+  private evictionCounts: Map<string, number> = new Map();
 
   constructor(config: SuperMcpConfig) {
     this.config = config;
@@ -712,8 +761,22 @@ export class PackageRegistry {
           }
           return client;
         }
-        // Client exists but not healthy, remove it
-        this.clients.delete(packageId);
+        // Client exists but not healthy, remove it.
+        // Stage 4b: counts as an eviction (unhealthy replacement, not user-initiated, not reap).
+        //
+        // Stage 4b M3 refinement: race-safe eviction counting. Two
+        // simultaneous `getClient()` callers can both await the same
+        // unhealthy `healthCheck`; without the `Map.delete()` return-value
+        // guard they would both increment `evictionCounts`, causing drift.
+        // `Map.delete()` returns `true` iff the entry was present, so only
+        // the first concurrent caller bumps the counter.
+        const deleted = this.clients.delete(packageId);
+        if (deleted) {
+          this.evictionCounts.set(
+            packageId,
+            (this.evictionCounts.get(packageId) ?? 0) + 1,
+          );
+        }
         client = undefined;
       } else {
         // Update activity for stdio clients
@@ -755,6 +818,11 @@ export class PackageRegistry {
     try {
       client = await clientPromise;
       this.clients.set(packageId, client);
+      // Stage 4b: increment per-package spawn counter exactly once per
+      // successful `createAndConnectClient()` completion (initial create path).
+      // The healthCheck-ok revive branch above does NOT increment — no new
+      // client was created there.
+      this.spawnCounts.set(packageId, (this.spawnCounts.get(packageId) ?? 0) + 1);
       // Update activity for stdio clients on initial connection
       if (config.transport === "stdio") {
         this.lastActivity.set(packageId, Date.now());
@@ -888,6 +956,8 @@ export class PackageRegistry {
 
       this.clients.delete(packageId);
       this.lastActivity.delete(packageId);
+      // Stage 4b: count this idle-reaper closure.
+      this.reapCounts.set(packageId, (this.reapCounts.get(packageId) ?? 0) + 1);
       reaped.push(packageId);
     }
 
@@ -1070,6 +1140,55 @@ export class PackageRegistry {
     this.lastActivity.clear();
 
     logger.info("All clients closed");
+  }
+
+  /**
+   * Return lightweight per-package lifecycle + activity stats.
+   *
+   * Stage 4b of `docs/plans/260423_secondary_process_cpu_observability.md`.
+   *
+   * Iterates `this.packages` (not `this.clients`) so known-but-uncreated
+   * packages are included with `connected: false, pid: null, spawn_count: 0`.
+   * Emitted by GET /stats; Rebel's perf diagnostic polls and caches this
+   * via `SuperMcpHttpManager.fetchStats()`.
+   *
+   * Pure data read — no I/O, no blocking. Safe to call on every diagnostic
+   * tick. Per-child CPU/RSS is NOT reported here (plan §Stage 4b: Node's
+   * `process.resourceUsage()` is self-only and cannot query children).
+   */
+  getChildStats(): ChildStatsEntry[] {
+    const now = Date.now();
+    return this.packages.map((pkg) => {
+      const client = this.clients.get(pkg.id);
+      const lastActivity = this.lastActivity.get(pkg.id) ?? null;
+
+      // Best-effort PID extraction without narrowing the `McpClient`
+      // interface. Only `StdioMcpClient` has `transport.pid` (available after
+      // connect); HTTP clients have no subprocess to attribute.
+      let pid: number | null = null;
+      if (client && pkg.transport === 'stdio') {
+        const maybePid = (client as unknown as { transport?: { pid?: unknown } })?.transport?.pid;
+        pid = typeof maybePid === 'number' ? maybePid : null;
+      }
+
+      return {
+        package_id: pkg.id,
+        transport: pkg.transport,
+        pid,
+        connected: Boolean(client),
+        idle_ms: lastActivity != null ? Math.max(0, now - lastActivity) : null,
+        last_activity_at: lastActivity,
+        // Stage 4b S2 refinement: strict `=== true` guards against a
+        // malformed client implementation returning a non-boolean truthy
+        // value. The reap-path truthiness guard in `sweepIdleClients()`
+        // is intentionally left alone — its semantics ("skip if any
+        // pending") match the existing reap behaviour.
+        pending_requests: client?.hasPendingRequests?.() === true,
+        spawn_count: this.spawnCounts.get(pkg.id) ?? 0,
+        reap_count: this.reapCounts.get(pkg.id) ?? 0,
+        eviction_count: this.evictionCounts.get(pkg.id) ?? 0,
+      };
+    });
   }
 
   async healthCheck(packageId: string): Promise<"ok" | "error" | "unavailable"> {

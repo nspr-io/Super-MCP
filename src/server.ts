@@ -256,6 +256,39 @@ export function registerHttpApiRoutes(
   app.get("/api/skipped-servers", dnsRebindingGuard, (_req, res) => {
     res.json({ packages: registry.getSkippedPackages() });
   });
+
+  // Stage 4b of docs/plans/260423_secondary_process_cpu_observability.md:
+  // lightweight per-child lifecycle/activity metadata for Rebel's perf
+  // diagnostic. Localhost-only (dnsRebindingGuard is defense-in-depth).
+  // Per-child CPU/RSS is NOT reported here — Node's `process.resourceUsage()`
+  // is self-only; Rebel samples per-PID CPU via its own subprocess sampler
+  // using the PIDs returned in `children[].pid`.
+  app.get("/stats", dnsRebindingGuard, (_req, res) => {
+    try {
+      const startedAt = new Date(Date.now() - process.uptime() * 1000).toISOString();
+      res.json({
+        router: {
+          running: true,
+          pid: process.pid,
+          uptime_ms: Math.round(process.uptime() * 1000),
+          started_at: startedAt,
+          // Stage 4b S3 refinement: start_count/restart_count are always
+          // 1/0 at the router level; super-mcp itself doesn't self-restart.
+          // Rebel-side restart count lives on
+          // `superMcpHttpManager.getSubprocessInfo()`.
+          start_count: 1,
+          restart_count: 0,
+        },
+        children: registry.getChildStats(),
+        generated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.error("Failed to build /stats payload", {
+        error: formatError(error),
+      });
+      res.status(500).json({ error: "Failed to build stats" });
+    }
+  });
 }
 
 export async function startServer(options: {
