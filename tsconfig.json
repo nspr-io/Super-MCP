@@ -9,8 +9,19 @@
     // Valid value for TS 5.x is "5.0"; TS 6.x only accepts "6.0". DO NOT "modernize"
     // this literal by eyeballing the parent repo's TypeScript version — that has
     // caused this line to flip four times in 25 days (regressions 260329, 260424).
-    // Durable fix is to modernize moduleResolution to "NodeNext" (below) so this
-    // option becomes unnecessary entirely — see docs/plans/ for the follow-up plan.
+    //
+    // CLASS-LEVEL FIX (parent repo): the parent repo's `validate:fast` now runs
+    // `cd super-mcp && npm install --prefer-offline && npm run build`, so any bad
+    // value here (or any other super-mcp build break) fails locally before commit.
+    // If you're reading this from inside an agent context, trust that gate — it
+    // will tell you the right value empirically. See parent's package.json
+    // `validate:super-mcp-build` script.
+    //
+    // NOTE: modernizing `moduleResolution` to "NodeNext" would eliminate this
+    // option entirely, but that migration was attempted on 2026-04-24 and found
+    // to require source changes in validator.ts (ajv/ajv-formats CJS interop).
+    // See docs/plans/260424_super_mcp_modernize_module_resolution.md for the
+    // spike evidence if you're tempted to retry.
     "ignoreDeprecations": "5.0",
     "rootDir": "src",
     "outDir": "dist",
