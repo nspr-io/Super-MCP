@@ -1,7 +1,13 @@
 import * as http from "http";
 import { timingSafeEqual } from "crypto";
 import { getLogger } from "../logging.js";
-import { OAUTH_CALLBACK_HOST } from "../utils/portFinder.js";
+import {
+  OAUTH_CALLBACK_HOST_V4,
+  OAUTH_CALLBACK_HOST_V6,
+} from "../utils/portFinder.js";
+
+/** Error codes that mean IPv6 loopback simply isn't usable on this host. */
+const IPV6_UNSUPPORTED_CODES = new Set(["EADDRNOTAVAIL", "EAFNOSUPPORT", "EINVAL"]);
 
 const logger = getLogger();
 
@@ -251,7 +257,10 @@ const SECURITY_HEADERS = {
 };
 
 export class OAuthCallbackServer {
-  private server?: http.Server;
+  /** IPv4 listener (127.0.0.1). REQUIRED — start() fails if this can't bind. */
+  private serverV4?: http.Server;
+  /** IPv6 listener (::1). BEST-EFFORT — missing on hosts without IPv6 loopback. */
+  private serverV6?: http.Server;
   private port: number;
   private resolveCallback?: (code: string) => void;
   private rejectCallback?: (error: Error) => void;
@@ -285,92 +294,156 @@ export class OAuthCallbackServer {
     return this.port;
   }
 
-  async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.server = http.createServer((req, res) => {
-        const url = new URL(req.url || "", `http://localhost:${this.port}`);
+  /** Shared request handler used by both the IPv4 and IPv6 listeners. */
+  private handleRequest = (req: http.IncomingMessage, res: http.ServerResponse): void => {
+    const url = new URL(req.url || "", `http://localhost:${this.port}`);
 
-        if (url.pathname === "/oauth/callback") {
-          const code = url.searchParams.get("code");
-          const error = url.searchParams.get("error");
-          const errorDescription = url.searchParams.get("error_description");
-          const receivedState = url.searchParams.get("state");
+    if (url.pathname === "/oauth/callback") {
+      const code = url.searchParams.get("code");
+      const error = url.searchParams.get("error");
+      const errorDescription = url.searchParams.get("error_description");
+      const receivedState = url.searchParams.get("state");
 
-          if (error) {
-            res.writeHead(200, SECURITY_HEADERS);
-            res.end(generateErrorHtml(error, errorDescription || undefined));
+      if (error) {
+        res.writeHead(200, SECURITY_HEADERS);
+        res.end(generateErrorHtml(error, errorDescription || undefined));
+
+        if (this.rejectCallback) {
+          this.rejectCallback(new Error(`OAuth error: ${error}`));
+        }
+      } else if (code) {
+        // Validate state parameter if expected state is set (CSRF protection)
+        if (this.expectedState) {
+          if (!receivedState) {
+            logger.error("OAuth callback missing state parameter (potential CSRF)", {
+              has_expected_state: true,
+            });
+            res.writeHead(400, SECURITY_HEADERS);
+            res.end(generateErrorHtml("invalid_state", "Missing state parameter"));
 
             if (this.rejectCallback) {
-              this.rejectCallback(new Error(`OAuth error: ${error}`));
+              this.rejectCallback(new Error("OAuth callback missing state parameter (potential CSRF attack)"));
             }
-          } else if (code) {
-            // Validate state parameter if expected state is set (CSRF protection)
-            if (this.expectedState) {
-              if (!receivedState) {
-                logger.error("OAuth callback missing state parameter (potential CSRF)", {
-                  has_expected_state: true
-                });
-                res.writeHead(400, SECURITY_HEADERS);
-                res.end(generateErrorHtml("invalid_state", "Missing state parameter"));
-                
-                if (this.rejectCallback) {
-                  this.rejectCallback(new Error("OAuth callback missing state parameter (potential CSRF attack)"));
-                }
-                return;
-              }
-              
-              if (!this.safeCompare(receivedState, this.expectedState)) {
-                logger.error("OAuth state mismatch (potential CSRF)", {
-                  // Don't log actual state values for security
-                  received_length: receivedState.length,
-                  expected_length: this.expectedState.length
-                });
-                res.writeHead(400, SECURITY_HEADERS);
-                res.end(generateErrorHtml("invalid_state", "State parameter mismatch"));
-                
-                if (this.rejectCallback) {
-                  this.rejectCallback(new Error("OAuth state mismatch (potential CSRF attack)"));
-                }
-                return;
-              }
-              
-              logger.debug("OAuth state validated successfully");
-            }
-            
-            res.writeHead(200, SECURITY_HEADERS);
-            res.end(generateSuccessHtml(this.serviceId));
-
-            logger.info("OAuth callback received", { has_code: true, state_validated: !!this.expectedState, serviceId: this.serviceId });
-
-            if (this.resolveCallback) {
-              this.resolveCallback(code);
-            }
-          } else {
-            res.writeHead(400, SECURITY_HEADERS);
-            res.end(generateErrorHtml("invalid_callback", "No authorization code received"));
+            return;
           }
-        } else {
-          res.writeHead(404);
-          res.end("Not found");
+
+          if (!this.safeCompare(receivedState, this.expectedState)) {
+            logger.error("OAuth state mismatch (potential CSRF)", {
+              // Don't log actual state values for security
+              received_length: receivedState.length,
+              expected_length: this.expectedState.length,
+            });
+            res.writeHead(400, SECURITY_HEADERS);
+            res.end(generateErrorHtml("invalid_state", "State parameter mismatch"));
+
+            if (this.rejectCallback) {
+              this.rejectCallback(new Error("OAuth state mismatch (potential CSRF attack)"));
+            }
+            return;
+          }
+
+          logger.debug("OAuth state validated successfully");
         }
-      });
 
-      // Bind to OAUTH_CALLBACK_HOST (127.0.0.1) to avoid triggering Windows Firewall prompts.
-      // Note: If users have issues with localhost resolving to ::1 (IPv6), we may need
-      // to create dual listeners or ensure redirect URIs use 127.0.0.1 explicitly.
-      this.server.listen(this.port, OAUTH_CALLBACK_HOST, () => {
-        logger.info("OAuth callback server started", { port: this.port, host: OAUTH_CALLBACK_HOST });
-        resolve();
-      });
+        res.writeHead(200, SECURITY_HEADERS);
+        res.end(generateSuccessHtml(this.serviceId));
 
-      this.server.on("error", (err) => {
-        logger.error("Failed to start OAuth callback server", {
-          error: err.message,
-          port: this.port,
+        logger.info("OAuth callback received", {
+          has_code: true,
+          state_validated: !!this.expectedState,
+          serviceId: this.serviceId,
+          remote_family: req.socket.remoteFamily,
         });
+
+        if (this.resolveCallback) {
+          this.resolveCallback(code);
+        }
+      } else {
+        res.writeHead(400, SECURITY_HEADERS);
+        res.end(generateErrorHtml("invalid_callback", "No authorization code received"));
+      }
+    } else {
+      res.writeHead(404);
+      res.end("Not found");
+    }
+  };
+
+  /**
+   * Start a single http.Server bound to the given loopback host.
+   * Resolves with the bound Server, or rejects with the bind error.
+   */
+  private listenOn(host: string): Promise<http.Server> {
+    return new Promise((resolve, reject) => {
+      const server = http.createServer(this.handleRequest);
+      const onError = (err: NodeJS.ErrnoException) => {
+        server.removeListener("listening", onListening);
         reject(err);
-      });
+      };
+      const onListening = () => {
+        server.removeListener("error", onError);
+        resolve(server);
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(this.port, host);
     });
+  }
+
+  async start(): Promise<void> {
+    // IPv4 listener is required. If localhost resolves to 127.0.0.1 anywhere in
+    // the user's stack (Chrome on Windows, most Linux setups, many macOS setups)
+    // this is the listener that handles the callback. Failure here is fatal.
+    try {
+      this.serverV4 = await this.listenOn(OAUTH_CALLBACK_HOST_V4);
+      logger.info("OAuth callback server started", {
+        port: this.port,
+        host: OAUTH_CALLBACK_HOST_V4,
+        stack: "v4",
+      });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      logger.error("Failed to start OAuth callback server (IPv4)", {
+        error: e.message,
+        code: e.code,
+        port: this.port,
+        stack: "v4",
+      });
+      throw err;
+    }
+
+    // IPv6 listener is best-effort. Needed when `localhost` resolves to `::1`
+    // first (default on modern macOS and some Linux distros). We still start the
+    // IPv4 listener even if this fails — but we explicitly warn so operators
+    // know the dual-stack protection isn't active.
+    try {
+      this.serverV6 = await this.listenOn(OAUTH_CALLBACK_HOST_V6);
+      logger.info("OAuth callback server started", {
+        port: this.port,
+        host: OAUTH_CALLBACK_HOST_V6,
+        stack: "v6",
+      });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code && IPV6_UNSUPPORTED_CODES.has(e.code)) {
+        // Host has no IPv6 loopback — typical on some containers / IPv6-disabled Windows.
+        // IPv4-only callback is sufficient because the browser can only reach the v4 stack.
+        logger.info("IPv6 loopback unavailable, running IPv4-only callback server", {
+          port: this.port,
+          stack: "v6",
+          code: e.code,
+        });
+      } else {
+        // e.g. EADDRINUSE — portFinder should have already caught this, but if we hit it
+        // here the IPv6 stack of `localhost` will reach the wrong process. Warn loudly;
+        // do NOT throw (we'd break IPv4-resolving browsers needlessly).
+        logger.warn("Failed to bind OAuth callback server IPv6 listener, proceeding IPv4-only", {
+          port: this.port,
+          stack: "v6",
+          code: e.code,
+          error: e.message,
+        });
+      }
+    }
   }
 
   /**
@@ -407,19 +480,27 @@ export class OAuthCallbackServer {
   }
 
   async stop(): Promise<void> {
-    if (this.server) {
-      // Wait briefly to allow the success response to be fully sent to the browser
-      // before force-closing connections (prevents "Connection Reset" errors)
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Force close to avoid 60-75 second delays from browser keep-alive
-      this.server.closeAllConnections();
-      return new Promise((resolve) => {
-        this.server!.close(() => {
-          logger.info("OAuth callback server stopped");
-          resolve();
-        });
-      });
-    }
+    const servers = [this.serverV4, this.serverV6].filter(
+      (s): s is http.Server => s !== undefined
+    );
+    if (servers.length === 0) return;
+
+    // Wait briefly to allow the success response to be fully sent to the browser
+    // before force-closing connections (prevents "Connection Reset" errors)
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    await Promise.all(
+      servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            // Force close to avoid 60-75 second delays from browser keep-alive
+            server.closeAllConnections();
+            server.close(() => resolve());
+          })
+      )
+    );
+    this.serverV4 = undefined;
+    this.serverV6 = undefined;
+    logger.info("OAuth callback server stopped", { listeners: servers.length });
   }
 }
