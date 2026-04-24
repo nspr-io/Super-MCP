@@ -3,7 +3,15 @@
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "Node",
-    "ignoreDeprecations": "6.0",
+    // ignoreDeprecations MUST equal super-mcp's OWN TypeScript major, NOT the parent
+    // repo's. super-mcp has its own package-lock.json pinning typescript — currently
+    // 5.9.3 (see node_modules/typescript/package.json after `npm ci` in this dir).
+    // Valid value for TS 5.x is "5.0"; TS 6.x only accepts "6.0". DO NOT "modernize"
+    // this literal by eyeballing the parent repo's TypeScript version — that has
+    // caused this line to flip four times in 25 days (regressions 260329, 260424).
+    // Durable fix is to modernize moduleResolution to "NodeNext" (below) so this
+    // option becomes unnecessary entirely — see docs/plans/ for the follow-up plan.
+    "ignoreDeprecations": "5.0",
     "rootDir": "src",
     "outDir": "dist",
     "strict": true,
