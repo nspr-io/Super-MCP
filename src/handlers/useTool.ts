@@ -787,6 +787,7 @@ export async function handleUseTool(
   try {
     const client = await registry.getClient(package_id);
     let toolResult = await client.callTool(tool_id, args);
+    const downstreamIsError = isRecord(toolResult) && toolResult.isError === true;
     registry.notifyActivity(package_id);
     const duration = Date.now() - startTime;
 
@@ -833,7 +834,7 @@ export async function handleUseTool(
               { type: "text", text: envelopeJson },
               ...imageBlocks,
             ],
-            isError: false,
+            isError: downstreamIsError,
           };
         }
       } catch (err: any) {
@@ -1003,7 +1004,7 @@ export async function handleUseTool(
         },
         ...passthroughImages,
       ],
-      isError: false,
+      isError: downstreamIsError,
     };
   } catch (error) {
     registry.notifyActivity(package_id);

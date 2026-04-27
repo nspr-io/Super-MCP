@@ -375,7 +375,7 @@ describe("materializeOutput mixed-content behavior", () => {
       mockValidator,
     );
 
-    expect(response.isError).toBe(false);
+    expect(response.isError).toBe(true);
     expect(response.content).toHaveLength(1);
     expect(response.content[0].type).toBe("text");
   });
