@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// MUST be the very first import — see docs/plans/260428_graceful_fs_emfile_fix.md
+import "./installGracefulFs.js";
 import { startServer } from "./server.js";
 import { initLogger } from "./logging.js";
 import * as fs from "fs";
