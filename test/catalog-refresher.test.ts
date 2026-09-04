@@ -137,6 +137,33 @@ describe("CatalogRefresher lifecycle", () => {
     expect(callCount).toBe(2);
   });
 
+  it("does not let auth-looking prose override a typed transport failure", async () => {
+    const CatalogRefresher = await loadCatalogRefresher();
+    const pkg = packageConfig("typed-transport");
+    const registry = {
+      getPackages: vi.fn().mockReturnValue([pkg]),
+      getPackage: vi.fn().mockReturnValue(pkg),
+      subscribeLifecycle: vi.fn(() => vi.fn()),
+      connectForCatalog: vi.fn().mockResolvedValue({
+        kind: "transient_failure",
+        failureClass: "transport_error",
+        error: new Error("OAuth authorization endpoint returned HTTP 503"),
+      }),
+    } as unknown as PackageRegistry;
+    const catalog = new Catalog(registry);
+    const refresher = new CatalogRefresher(catalog, registry, {
+      random: () => 0.5,
+    });
+
+    refresher.start();
+    await vi.waitFor(() => {
+      expect(catalog.getPackageStatus(pkg.id)).toBe("error");
+    });
+
+    expect(catalog.getPackageDiagnostics(pkg.id).lastErrorClass).toBe("transport_error");
+    await refresher.dispose();
+  });
+
   it("R15: a healthy package eventually reaches ready after bounded hung attempts time out", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-19T00:00:00.000Z"));

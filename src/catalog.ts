@@ -840,12 +840,16 @@ export class Catalog implements CatalogView {
     };
   }
 
-  categorizeError(packageId: string, error: unknown): {
+  categorizeError(
+    packageId: string,
+    error: unknown,
+    options: { allowAuthClassification?: boolean } = {},
+  ): {
     status: "auth_required" | "error";
     lastError?: string;
   } {
     const message = error instanceof Error ? error.message : String(error);
-    if (this.isAuthError(error)) {
+    if (options.allowAuthClassification !== false && this.isAuthError(error)) {
       logger.info("Package requires authentication, retaining last-known-good catalog", {
         package_id: packageId,
       });

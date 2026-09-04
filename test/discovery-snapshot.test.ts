@@ -149,6 +149,14 @@ describe("snapshot-only discovery", () => {
     const neverConnects = new Promise<McpClient>(() => {});
     const registry = registryStub(packages, async () => neverConnects);
     const catalog = new Catalog(registry);
+    const failedGeneration = catalog.beginRefresh("alpha");
+    catalog.commitFailure("alpha", failedGeneration, {
+      status: "error",
+      lastError: "request timed out",
+      failureClass: "timeout",
+      nextRetryAt: Date.now() + 15_000,
+      nextAuthProbeAt: null,
+    });
 
     const outcome = await raceAgainstSentinel(handleListToolPackages(
       { safe_only: true, limit: 100, include_health: true },
@@ -164,6 +172,8 @@ describe("snapshot-only discovery", () => {
     expect(packageRows.map((row) => row.package_id)).toEqual(["alpha", "beta"]);
     expect(packageRows.every((row) => typeof row.catalog_status === "string")).toBe(true);
     expect(packageRows.every((row) => "retry_in_ms" in row)).toBe(true);
+    expect(packageRows.find((row) => row.package_id === "alpha")?.last_error_class).toBe("timeout");
+    expect(packageRows.find((row) => row.package_id === "beta")?.last_error_class).toBeNull();
   });
 
   it("R5: search_tools returns healthy tools and names a hung package as unavailable", async () => {

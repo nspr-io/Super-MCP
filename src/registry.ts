@@ -9,25 +9,23 @@ import {
   SkippedPackage,
   ValidationResult,
   type ConnectOutcome,
-  type PermanentConnectFailureClass,
-  type TransientConnectFailureClass,
   type CatalogStatus,
+  type ClientReadinessOutcome,
 } from "./types.js";
 import { StdioMcpClient } from "./clients/stdioClient.js";
 import { HttpMcpClient } from "./clients/httpClient.js";
 import { SimpleOAuthProvider } from "./auth/providers/simple.js";
 import { getLogger } from "./logging.js";
 import { SecurityPolicy, SecurityConfig, setSecurityPolicy } from "./security.js";
+import {
+  classifyConnectorError,
+} from "./utils/classifyConnectorError.js";
+import {
+  FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
+  STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+} from "./utils/listToolsTimeout.js";
 
 const logger = getLogger();
-
-const PERMANENT_CONNECT_ERROR_CODES = new Set(["ENOENT", "EACCES"]);
-const PERMANENT_CONNECT_MESSAGE_PATTERNS = [
-  /^spawn\b[^\r\n]*\b(?:ENOENT|EACCES)\b\s*$/im,
-  /^(?:[^\r\n]*:\s*)?command not found\s*$/im,
-  /^(?:[^\r\n]*:\s*)?permission denied\s*$/im,
-];
-const MAX_ERROR_CAUSE_NODES = 8;
 
 // Connect attempts per getClient() miss: one initial connect + the single
 // retry in createAndConnectClientWithOneRetry. Exported so the OAuth budget
@@ -71,97 +69,33 @@ function connectTimeoutError(packageId: string, timeoutMs: number): Error & { co
   );
 }
 
-function isPermanentConnectFailure(error: unknown): boolean {
+export async function assessClientReadiness(
+  config: PackageConfig,
+  client: McpClient,
+  options: { listToolsTimeoutMs?: number } = {},
+): Promise<ClientReadinessOutcome> {
   try {
-    const pending: unknown[] = [error];
-    const seen = new Set<object>();
-
-    while (pending.length > 0 && seen.size < MAX_ERROR_CAUSE_NODES) {
-      const current = pending.shift();
-      if (typeof current === "string") {
-        if (
-          PERMANENT_CONNECT_MESSAGE_PATTERNS.some((pattern) =>
-            pattern.test(current),
-          )
-        ) {
-          return true;
-        }
-        continue;
-      }
-      if (typeof current !== "object" || current === null || seen.has(current)) {
-        continue;
-      }
-      seen.add(current);
-
-      const causalError = current as {
-        code?: unknown;
-        message?: unknown;
-        cause?: unknown;
-        originalError?: unknown;
-      };
-      if (
-        typeof causalError.code === "string" &&
-        PERMANENT_CONNECT_ERROR_CODES.has(causalError.code)
-      ) {
-        return true;
-      }
-      if (
-        typeof causalError.message === "string" &&
-        PERMANENT_CONNECT_MESSAGE_PATTERNS.some((pattern) =>
-          pattern.test(causalError.message as string),
-        )
-      ) {
-        return true;
-      }
-      pending.push(causalError.cause, causalError.originalError);
+    if (client.readinessCheck) {
+      return await client.readinessCheck(options);
     }
-  } catch {
-    // Diagnostic classification must never replace the original connect error.
+    const health = await client.healthCheck?.(options);
+    if (health === "needs_auth") {
+      return {
+        kind: "auth_required",
+        error: new Error(`Authentication required for MCP package '${config.id}'`),
+      };
+    }
+    if (health === "error") {
+      return {
+        kind: "transient_failure",
+        failureClass: "transport_error",
+        error: new Error(`MCP package '${config.id}' failed its health check`),
+      };
+    }
+    return { kind: "ready" };
+  } catch (error) {
+    return classifyConnectorError(config, error);
   }
-
-  return false;
-}
-
-function classifyPermanentConnectFailure(error: unknown): PermanentConnectFailureClass {
-  const code = error instanceof Error
-    ? (error as Error & { code?: unknown }).code
-    : undefined;
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  if (code === "ENOENT" || message.includes("command not found") || message.includes("enoent")) {
-    return "executable_not_found";
-  }
-  if (code === "EACCES" || message.includes("permission denied") || message.includes("eacces")) {
-    return "permission_denied";
-  }
-  return "unknown";
-}
-
-function classifyTransientConnectFailure(error: unknown): TransientConnectFailureClass {
-  const code = error instanceof Error
-    ? (error as Error & { code?: unknown }).code
-    : undefined;
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
-  if (code === "ETIMEDOUT" || message.includes("timed out") || message.includes("timeout")) {
-    return "timeout";
-  }
-  if (code === "ECONNREFUSED" || message.includes("econnrefused") || message.includes("connection refused")) {
-    return "connection_refused";
-  }
-  if (code === "ECONNRESET" || message.includes("econnreset") || message.includes("connection reset")) {
-    return "connection_reset";
-  }
-  if (error instanceof Error) return "transport_error";
-  return "unknown";
-}
-
-function isAuthConnectFailure(config: PackageConfig, error: unknown): boolean {
-  return config.transport === "http" && error instanceof Error && (
-    error.message.includes("Unauthorized") ||
-    error.message.includes("401") ||
-    error.message.includes("invalid_token") ||
-    error.message.includes("authorization") ||
-    error.name === "UnauthorizedError"
-  );
 }
 
 function clientFromConnectOutcome(outcome: ConnectOutcome | McpClient): McpClient | undefined {
@@ -1111,7 +1045,7 @@ export class PackageRegistry {
 
   async connectForCatalog(
     packageId: string,
-    options: { forceReconnect?: boolean } = {},
+    options: { forceReconnect?: boolean; listToolsTimeoutMs?: number } = {},
   ): Promise<ConnectOutcome> {
     const config = this.getPackage(packageId);
     if (!config) {
@@ -1129,41 +1063,31 @@ export class PackageRegistry {
     }
 
     try {
+      const cachedClient = this.clients.get(packageId);
       const client = await this.getClient(packageId);
-      const health = await client.healthCheck?.();
-      if (health === "needs_auth") {
-        const error = new Error(`Authentication required for MCP package '${packageId}'`);
+      const readiness = await assessClientReadiness(config, client, {
+        listToolsTimeoutMs:
+          options.listToolsTimeoutMs ??
+          (client === cachedClient
+            ? STEADY_STATE_LIST_TOOLS_TIMEOUT_MS
+            : FIRST_USE_LIST_TOOLS_TIMEOUT_MS),
+      });
+      if (readiness.kind === "auth_required") {
         this.notifyAuthOutcome(packageId, "auth_required");
-        return { kind: "auth_required", client, error };
+        return { ...readiness, client };
       }
-      if (health === "error") {
-        return {
-          kind: "transient_failure",
-          failureClass: "transport_error",
-          error: new Error(`MCP package '${packageId}' failed its health check`),
-        };
+      if (readiness.kind !== "ready") {
+        return readiness;
       }
       return { kind: "connected", client };
     } catch (error) {
-      if (isAuthConnectFailure(config, error)) {
+      const failure = classifyConnectorError(config, error);
+      if (failure.kind === "auth_required") {
         const client = this.clients.get(packageId);
-        if (client) {
-          this.notifyAuthOutcome(packageId, "auth_required");
-          return { kind: "auth_required", client, error };
-        }
+        this.notifyAuthOutcome(packageId, "auth_required");
+        return { ...failure, ...(client ? { client } : {}) };
       }
-      if (isPermanentConnectFailure(error)) {
-        return {
-          kind: "permanent_failure",
-          failureClass: classifyPermanentConnectFailure(error),
-          error,
-        };
-      }
-      return {
-        kind: "transient_failure",
-        failureClass: classifyTransientConnectFailure(error),
-        error,
-      };
+      return failure;
     }
   }
 
@@ -1193,7 +1117,6 @@ export class PackageRegistry {
           return client;
         }
         if (health === "needs_auth") {
-          this.notifyAuthOutcome(packageId, "auth_required");
           return client;
         }
         // Client exists but not healthy, remove it.
@@ -1540,7 +1463,7 @@ export class PackageRegistry {
         }
       }
 
-      if (isPermanentConnectFailure(firstError)) {
+      if (classifyConnectorError(config, firstError).kind === "permanent_failure") {
         this.connectRetrySkippedPermanentCounts.set(
           packageId,
           (this.connectRetrySkippedPermanentCounts.get(packageId) ?? 0) + 1,
@@ -1644,7 +1567,8 @@ export class PackageRegistry {
     } catch (error) {
       // Preserve the current caller-visible auth behavior while returning a
       // typed outcome for the Stage 4 catalog writer.
-      if (isAuthConnectFailure(config, error)) {
+      const failure = classifyConnectorError(config, error);
+      if (failure.kind === "auth_required") {
         logger.info("Package requires authentication", {
           package_id: packageId,
           message: `Use 'authenticate(package_id: "${packageId}")' to sign in`,
@@ -1663,18 +1587,14 @@ export class PackageRegistry {
         });
       }
 
-      if (isPermanentConnectFailure(error)) {
+      if (failure.kind === "permanent_failure") {
         return {
           kind: "permanent_failure",
-          failureClass: classifyPermanentConnectFailure(error),
+          failureClass: failure.failureClass,
           error,
         };
       }
-      return {
-        kind: "transient_failure",
-        failureClass: classifyTransientConnectFailure(error),
-        error,
-      };
+      return failure;
     }
     
     return { kind: "connected", client };

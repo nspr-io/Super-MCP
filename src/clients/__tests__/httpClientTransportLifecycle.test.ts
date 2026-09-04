@@ -83,6 +83,28 @@ describe("HttpMcpClient transport lifecycle", () => {
     );
   });
 
+  it("classifies a disconnected client as transport-unready rather than unauthenticated", async () => {
+    const client = makeClient("disconnected");
+
+    await expect(client.readinessCheck()).resolves.toMatchObject({
+      kind: "transient_failure",
+      failureClass: "transport_error",
+    });
+    await expect(client.healthCheck()).resolves.toBe("error");
+  });
+
+  it("passes the per-call first-use budget into the SDK request timeout", async () => {
+    const client = makeClient("first-use");
+    const listTools = vi.fn(async () => ({ tools: [] }));
+    Object.assign(client as unknown as Record<string, unknown>, {
+      isConnected: true,
+      client: { listTools },
+    });
+
+    await expect(client.listTools({ timeoutMs: 30_000 })).resolves.toEqual([]);
+    expect(listTools).toHaveBeenCalledWith(undefined, { timeout: 30_000 });
+  });
+
   it("terminates an established HTTP session without letting a rejected or hung DELETE block close", async () => {
     vi.useFakeTimers();
 

@@ -516,19 +516,12 @@ export class CatalogRefresher {
     error: unknown,
     failureClass: TransientConnectFailureClass = classifyTransientFailure(error),
   ): void {
-    const categorized = this.catalog.categorizeError(packageId, error);
-    if (categorized.status === "auth_required") {
-      this.catalog.commitFailure(packageId, generation, {
-        status: "auth_required",
-        lastError: categorized.lastError,
-        failureClass: "auth_required",
-        nextRetryAt: null,
-        nextAuthProbeAt: this.authProbeIntervalMs === 0
-          ? null
-          : this.now() + this.authProbeIntervalMs,
-      });
-      return;
-    }
+    // The registry has already classified this outcome as transient. Do not
+    // allow auth-looking prose in a transport error to override that typed
+    // verdict (for example an OAuth endpoint timing out).
+    const categorized = this.catalog.categorizeError(packageId, error, {
+      allowAuthClassification: false,
+    });
     const consecutiveFailures = this.catalog.getConsecutiveFailures(packageId) + 1;
     const delay = calculateRetryDelayMs({
       failureClass,

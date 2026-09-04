@@ -58,6 +58,7 @@ export async function handleListToolPackages(
       catalog_error: state.reason,
       retry_in_ms: state.retryInMs,
       next_retry_at: state.nextRetryAt,
+      last_error_class: catalog.getPackageDiagnostics(pkg.id).lastErrorClass,
     };
   });
 

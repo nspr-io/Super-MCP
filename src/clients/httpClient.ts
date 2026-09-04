@@ -4,11 +4,21 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { createRequire } from "node:module";
 import PQueue from "p-queue";
-import { McpClient, PackageConfig, ReadResourceResult } from "../types.js";
+import {
+  McpClient,
+  PackageConfig,
+  ReadResourceResult,
+  type ClientReadinessOutcome,
+} from "../types.js";
 import { getLogger } from "../logging.js";
 import { SimpleOAuthProvider, RefreshOnlyOAuthProvider } from "../auth/providers/index.js";
 import { OAUTH_REDIRECT_URI_REJECTED_CODE } from "../auth/authorizeProbe.js";
 import { isAuthLikeErrorMessageText } from "../auth/authLikeVocabulary.js";
+import { classifyConnectorError } from "../utils/classifyConnectorError.js";
+import {
+  resolveListToolsTimeoutMs,
+  STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+} from "../utils/listToolsTimeout.js";
 import type { OAuthErrorSummary, StaticOAuthCredentials } from "../auth/providers/simple.js";
 import { runRefreshTransaction } from "../auth/refreshTransaction.js";
 
@@ -378,13 +388,6 @@ export const OAUTH_FINISH_AUTH_TIMEOUT_CODE = "OAUTH_FINISH_AUTH_TIMEOUT";
 // auth/authorizeProbe.ts to avoid an import cycle: auth/providers/simple.ts
 // throws the coded error and is itself imported by this module.
 export { OAUTH_REDIRECT_URI_REJECTED_CODE } from "../auth/authorizeProbe.js";
-
-// Default SDK request timeout for listTools (env override:
-// SUPER_MCP_LIST_TOOLS_TIMEOUT). Exported because healthCheck() delegates to
-// listTools(), making this the bound on BOTH health-check legs of the
-// authenticate pre-check path — a leg of the OAuth budget invariant
-// (src/handlers/__tests__/oauthBudgetInvariant.test.ts).
-export const LIST_TOOLS_TIMEOUT_MS = 10_000;
 
 // The auth-like message vocabulary lives in the auth/authLikeVocabulary.ts
 // LEAF module so auth/authorizeProbe.ts can enforce the rejection-message
@@ -971,12 +974,14 @@ export class HttpMcpClient implements McpClient {
     return options;
   }
 
-  async listTools(): Promise<any[]> {
+  async listTools(options: { timeoutMs?: number } = {}): Promise<any[]> {
     if (!this.isConnected) {
       throw new Error(`Package '${this.packageId}' is not connected`);
     }
 
-    const timeout = parseInt(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT || String(LIST_TOOLS_TIMEOUT_MS));
+    const timeout = resolveListToolsTimeoutMs(
+      options.timeoutMs ?? STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+    );
 
     logger.info("Listing tools from HTTP MCP", {
       package_id: this.packageId,
@@ -1113,21 +1118,24 @@ export class HttpMcpClient implements McpClient {
     }
   }
 
-  async healthCheck(): Promise<"ok" | "error" | "needs_auth"> {
-    if (!this.isConnected) {
-      return "needs_auth";
-    }
-
+  async readinessCheck(
+    options: { listToolsTimeoutMs?: number } = {},
+  ): Promise<ClientReadinessOutcome> {
     try {
-      await this.listTools();
-      return "ok";
+      await this.listTools({ timeoutMs: options.listToolsTimeoutMs });
+      return { kind: "ready" };
     } catch (error) {
-      if (error instanceof Error && 
-          (error.message.includes("Unauthorized") || error.message.includes("401"))) {
-        return "needs_auth";
-      }
-      return "error";
+      return classifyConnectorError(this.config, error);
     }
+  }
+
+  async healthCheck(
+    options: { listToolsTimeoutMs?: number } = {},
+  ): Promise<"ok" | "error" | "needs_auth"> {
+    const readiness = await this.readinessCheck(options);
+    if (readiness.kind === "ready") return "ok";
+    if (readiness.kind === "auth_required") return "needs_auth";
+    return "error";
   }
 
   async requiresAuth(): Promise<boolean> {

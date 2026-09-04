@@ -4,6 +4,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import PQueue from "p-queue";
 import { McpClient, PackageConfig, ReadResourceResult } from "../types.js";
 import { getLogger } from "../logging.js";
+import {
+  resolveListToolsTimeoutMs,
+  STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+} from "../utils/listToolsTimeout.js";
 
 const logger = getLogger();
 
@@ -471,8 +475,10 @@ export class StdioMcpClient implements McpClient {
     }
   }
 
-  async listTools(): Promise<any[]> {
-    const timeout = parseInt(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT || '10000');
+  async listTools(options: { timeoutMs?: number } = {}): Promise<any[]> {
+    const timeout = resolveListToolsTimeoutMs(
+      options.timeoutMs ?? STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+    );
 
     logger.info("Listing tools from stdio MCP", {
       package_id: this.packageId,

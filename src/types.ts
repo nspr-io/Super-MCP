@@ -141,6 +141,7 @@ export interface PackageInfo {
   catalog_error?: string;
   retry_in_ms: number | null;
   next_retry_at: number | null;
+  last_error_class: string | null;
 }
 
 export interface ToolInfo {
@@ -372,10 +373,11 @@ export interface ReadResourceResult {
 
 export interface McpClient {
   connect(): Promise<void>;
-  listTools(): Promise<any[]>;
+  listTools(options?: { timeoutMs?: number }): Promise<any[]>;
   callTool(name: string, args: any): Promise<any>;
   close(): Promise<void>;
-  healthCheck?(): Promise<'ok' | 'error' | 'needs_auth'>;
+  healthCheck?(options?: { listToolsTimeoutMs?: number }): Promise<'ok' | 'error' | 'needs_auth'>;
+  readinessCheck?(options?: { listToolsTimeoutMs?: number }): Promise<ClientReadinessOutcome>;
   requiresAuth?(): Promise<boolean>;
   isAuthenticated?(): Promise<boolean>;
   readResource?(uri: string): Promise<ReadResourceResult>;
@@ -397,13 +399,20 @@ export type PermanentConnectFailureClass =
   | 'invalid_configuration'
   | 'unknown';
 
+/** Typed health/readiness evidence before registry policy adds the client. */
+export type ClientReadinessOutcome =
+  | { kind: 'ready' }
+  | { kind: 'auth_required'; error: unknown }
+  | { kind: 'transient_failure'; failureClass: TransientConnectFailureClass; error: unknown }
+  | { kind: 'permanent_failure'; failureClass: PermanentConnectFailureClass; error: unknown };
+
 /**
  * The complete result vocabulary for one upstream connection attempt.
  * Stage 4 consumes this outcome to drive catalog status and retry scheduling.
  */
 export type ConnectOutcome =
   | { kind: 'connected'; client: McpClient }
-  | { kind: 'auth_required'; client: McpClient; error: unknown }
+  | { kind: 'auth_required'; client?: McpClient; error: unknown }
   | { kind: 'setup_incomplete'; reason: SetupIncompleteReason }
   | { kind: 'transient_failure'; failureClass: TransientConnectFailureClass; error: unknown }
   | { kind: 'permanent_failure'; failureClass: PermanentConnectFailureClass; error: unknown };

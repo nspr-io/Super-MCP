@@ -1,17 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   OAUTH_CALLBACK_TIMEOUT_MS,
-  HEALTH_CHECK_TIMEOUT_MS,
-  PRE_CHECK_LIST_TOOLS_TIMEOUT_WINDOWS_MS,
+  POST_AUTH_READINESS_TIMEOUT_MS,
   MAX_PORT_ATTEMPTS,
 } from "../authenticate.js";
 import { AUTHORIZE_PROBE_TIMEOUT_MS } from "../../auth/authorizeProbe.js";
 import {
   CONNECT_TIMEOUT_MS,
   FINISH_AUTH_TIMEOUT_MS,
-  LIST_TOOLS_TIMEOUT_MS,
 } from "../../clients/httpClient.js";
 import { REGISTRY_CONNECT_ATTEMPTS } from "../../registry.js";
+import {
+  FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
+  STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+} from "../../utils/listToolsTimeout.js";
 
 vi.mock("../../logging.js", () => ({
   getLogger: () => ({
@@ -49,7 +51,8 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
   // own health check and listTools race on the fresh client.
   //
   // Deliberately excluded (documented, not forgotten):
-  //  - env overrides (SUPER_MCP_LIST_TOOLS_TIMEOUT[_MS], SUPER_MCP_CONNECT_TIMEOUT_MS)
+  //  - env overrides (SUPER_MCP_LIST_TOOLS_TIMEOUT_MS and its deprecated alias,
+  //    SUPER_MCP_CONNECT_TIMEOUT_MS)
   //    — ops knobs, not defaults (plan residue R18);
   //  - request-queue (p-queue) scheduling delay ahead of the SDK listTools timer;
   //  - the SSE-fallback double-connect inside one attempt: it only triggers on
@@ -58,10 +61,9 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
   //    pathological. Worst case it adds CONNECT_TIMEOUT_MS per attempt.
   // The pre-check legs + per-attempt setup run ONCE per authenticate call.
   const PRE_CHECK_AND_SETUP_MS =
-    LIST_TOOLS_TIMEOUT_MS + // registry cached-client health check (registry.ts getClient → httpClient.ts healthCheck/listTools)
+    STEADY_STATE_LIST_TOOLS_TIMEOUT_MS + // cached-client health (registry.ts getClient)
     REGISTRY_CONNECT_ATTEMPTS * CONNECT_TIMEOUT_MS + // registry reconnect: initial + one retry (registry.ts createAndConnectClientWithOneRetry)
-    LIST_TOOLS_TIMEOUT_MS + // handler health check on the fresh client (authenticate.ts pre-check)
-    PRE_CHECK_LIST_TOOLS_TIMEOUT_WINDOWS_MS + // pre-check listTools race, Windows worst-case default (authenticate.ts)
+    FIRST_USE_LIST_TOOLS_TIMEOUT_MS + // one typed readiness probe on the fresh client (authenticate.ts → registry.ts)
     SETUP_MARGIN_MS; // port find + provider init + callback-server start + settle (authenticate.ts)
 
   // A classified-rejection attempt dies AT THE PROBE (recall#2 F4): per-attempt
@@ -79,7 +81,7 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
     OAUTH_CALLBACK_TIMEOUT_MS + // browser sign-in window (authenticate.ts)
     FINISH_AUTH_TIMEOUT_MS + // token exchange (httpClient.ts finishOAuth)
     CONNECT_TIMEOUT_MS + // post-exchange reconnect (httpClient.ts connectWithTimeout)
-    HEALTH_CHECK_TIMEOUT_MS; // post-auth verification (authenticate.ts)
+    POST_AUTH_READINESS_TIMEOUT_MS; // 30s SDK list + 5s queue/compat allowance (authenticate.ts)
 
   it("branch-aware worst-case sum of inner legs stays strictly inside the desktop authenticate budget", () => {
     // n=1 (single attempt — the kill-switch / no-rejection path): identical to
@@ -89,20 +91,20 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
       PRE_CHECK_AND_SETUP_MS +
       FULL_ATTEMPT_MS;
 
-    expect(innerWorstCaseMs).toBe(492_000);
+    expect(innerWorstCaseMs).toBe(497_000);
     expect(innerWorstCaseMs).toBeLessThan(DESKTOP_AUTHENTICATE_TOOL_TIMEOUT_MS);
     // The kill-switch path keeps the legacy sub-500s budget, pinned against
     // the imported constants (testing F7), not only mirrored literals.
     expect(innerWorstCaseMs).toBeLessThan(500_000);
   });
 
-  it("accepted-attempt path (MAX_PORT_ATTEMPTS - 1 rejections + one full attempt) keeps the ~58s margin", () => {
+  it("accepted-attempt path (MAX_PORT_ATTEMPTS - 1 rejections + one full attempt) keeps >50s margin", () => {
     // REBEL-7F9 Stage 3 (confirm#F1/F8): up to MAX_PORT_ATTEMPTS - 1 fast
     // probe-rejected retry legs precede the one full attempt whose 300s
     // callback wait applies exactly once. This is the margin that protects a
     // slow legitimate login on the final attempt.
-    //   112s pre-check+setup + 2 × 35s (setup 2s + probe 3s + connect/DCR 30s)
-    //   + 380s full attempt = 562s < 620s (~58s margin).
+    //   102s pre-check+setup + 2 × 35s (setup 2s + probe 3s + connect/DCR 30s)
+    //   + 395s full attempt = 567s < 620s (53s margin).
     const acceptedPathWorstCaseMs =
       PRE_CHECK_AND_SETUP_MS +
       (MAX_PORT_ATTEMPTS - 1) * FAST_REJECTED_ATTEMPT_MS +
@@ -110,11 +112,11 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
 
     expect(MAX_PORT_ATTEMPTS).toBe(3);
     expect(AUTHORIZE_PROBE_TIMEOUT_MS).toBe(3_000);
-    expect(acceptedPathWorstCaseMs).toBe(562_000);
+    expect(acceptedPathWorstCaseMs).toBe(567_000);
     expect(acceptedPathWorstCaseMs).toBeLessThan(DESKTOP_AUTHENTICATE_TOOL_TIMEOUT_MS);
   });
 
-  it("uniform-rejection floor path (MAX_PORT_ATTEMPTS rejections + floor attempt) is the true worst case, ~21s margin", () => {
+  it("uniform-rejection floor path keeps a defensible 16s margin", () => {
     // Stage 3 review F1 (all five reviewers): the browser-open floor runs a
     // FOURTH attempt (runAttempt(firstRejection.port, { skipProbe: true }))
     // after all MAX_PORT_ATTEMPTS candidates classify-reject — the "bounded
@@ -122,8 +124,10 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
     // test pins 4 httpClient instances. The floor attempt's own setup leg
     // (~2s) applies, but not its probe leg (skipProbe). This is the real
     // no-progress worst case:
-    //   112s pre-check+setup + 3 × 35s fast-rejected legs + ~2s floor setup
-    //   + 380s full attempt = 599s < 620s (~21s margin, not 58s).
+    //   102s pre-check+setup + 3 × 35s fast-rejected legs + ~2s floor setup
+    //   + 395s full attempt = 604s < 620s (16s margin). The 35s post-auth
+    //   outer bound includes 5s beyond the SDK's 30s timer for queue/adapter
+    //   overhead; the remaining 16s protects the host boundary.
     // A leg growth that keeps the accepted-path sum green can still breach
     // THIS path — the guard exists to catch exactly that.
     const floorPathWorstCaseMs =
@@ -132,7 +136,7 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
       FLOOR_ATTEMPT_SETUP_MS +
       FULL_ATTEMPT_MS;
 
-    expect(floorPathWorstCaseMs).toBe(599_000);
+    expect(floorPathWorstCaseMs).toBe(604_000);
     expect(floorPathWorstCaseMs).toBeLessThan(DESKTOP_AUTHENTICATE_TOOL_TIMEOUT_MS);
   });
 });

@@ -1,4 +1,4 @@
-import { PackageRegistry } from "../registry.js";
+import { assessClientReadiness, PackageRegistry } from "../registry.js";
 import { Catalog, type CatalogRefreshController } from "../catalog.js";
 import { getLogger } from "../logging.js";
 import { checkPortAvailable, findAvailablePortFromCandidates, getOAuthCallbackPortCandidates, getOAuthCallbackRetryCandidates } from "../utils/portFinder.js";
@@ -9,6 +9,16 @@ import { isAuthorizeProbeDisabled, type AuthorizeProbeVerdict } from "../auth/au
 import { formatError } from "../utils/formatError.js";
 import { coerceStringifiedBoolean } from "../utils/normalizeInput.js";
 import { getValidator } from "../validator.js";
+import { classifyConnectorError } from "../utils/classifyConnectorError.js";
+import type {
+  ConnectOutcome,
+  PackageConfig,
+  PermanentConnectFailureClass,
+  TransientConnectFailureClass,
+} from "../types.js";
+import {
+  FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
+} from "../utils/listToolsTimeout.js";
 
 const logger = getLogger();
 const STDIO_AUTH_DELEGATION_TIMEOUT_MS = 60_000;
@@ -16,17 +26,20 @@ const STDIO_AUTH_DELEGATION_TIMEOUT_MS = 60_000;
 // Budget legs of the wait_for_completion OAuth path. The desktop host bounds the
 // WHOLE handleAuthenticate call with AUTHENTICATE_TOOL_TIMEOUT_MS (app repo:
 // src/main/services/mcpService.ts) — if you change any constant here, or
-// FINISH_AUTH_TIMEOUT_MS / CONNECT_TIMEOUT_MS / LIST_TOOLS_TIMEOUT_MS in
-// ../clients/httpClient.ts, or REGISTRY_CONNECT_ATTEMPTS in ../registry.ts, the
+// FINISH_AUTH_TIMEOUT_MS / CONNECT_TIMEOUT_MS in ../clients/httpClient.ts,
+// FIRST_USE_LIST_TOOLS_TIMEOUT_MS / STEADY_STATE_LIST_TOOLS_TIMEOUT_MS in
+// ../utils/listToolsTimeout.ts, or REGISTRY_CONNECT_ATTEMPTS in ../registry.ts, the
 // desktop constant and src/handlers/__tests__/oauthBudgetInvariant.test.ts must
 // move with it. The pre-check leg is branch-aware: registry.getClient() may
-// health-check a cached client (LIST_TOOLS_TIMEOUT_MS) and reconnect with one
+// health-check a cached client (steady-state list budget) and reconnect with one
 // retry (REGISTRY_CONNECT_ATTEMPTS × CONNECT_TIMEOUT_MS) BEFORE the handler's
-// own health check + listTools race below.
+// first-use readiness check.
 // 5 minutes — OAuth flows can take time (login, 2FA, permissions review,
 // workspace selection).
 export const OAUTH_CALLBACK_TIMEOUT_MS = 300_000;
-export const HEALTH_CHECK_TIMEOUT_MS = 20_000;
+// The production HTTP readiness check is internally bounded at 30s. Keep a
+// small outer allowance for queue scheduling and non-HTTP compatibility clients.
+export const POST_AUTH_READINESS_TIMEOUT_MS = 35_000;
 
 // Bounded port retry on classified authorize-probe rejections (REBEL-7F9
 // Stage 3). Rejected attempts die at the probe (≤ AUTHORIZE_PROBE_TIMEOUT_MS),
@@ -50,12 +63,81 @@ type AttemptOutcome =
   | { kind: "rejected"; verdict: AuthorizeProbeVerdict; httpClient: any }
   | { kind: "pending"; httpClient: any; diagnosticsSuffix?: string };
 
-// Defaults for the pre-check listTools race (env override:
-// SUPER_MCP_LIST_TOOLS_TIMEOUT_MS). Windows needs a longer default because of
-// antivirus/firewall checks on cold-start; the Windows value is the worst case
-// the OAuth budget invariant sums.
-export const PRE_CHECK_LIST_TOOLS_TIMEOUT_WINDOWS_MS = 30_000;
-export const PRE_CHECK_LIST_TOOLS_TIMEOUT_DEFAULT_MS = 10_000;
+type ReadinessOutcome = Exclude<ConnectOutcome, { kind: "setup_incomplete" }>;
+
+async function getPackageReadiness(
+  registry: PackageRegistry,
+  pkg: PackageConfig,
+): Promise<ReadinessOutcome> {
+  const registryWithReadiness = registry as PackageRegistry & {
+    connectForCatalog?: PackageRegistry["connectForCatalog"];
+  };
+  if (registryWithReadiness.connectForCatalog) {
+    const outcome = await registryWithReadiness.connectForCatalog(pkg.id);
+    if (outcome.kind !== "setup_incomplete") return outcome;
+    return {
+      kind: "permanent_failure",
+      failureClass: "invalid_configuration",
+      error: new Error(`Package setup is incomplete: ${outcome.reason}`),
+    };
+  }
+
+  // Compatibility seam for narrowed registry doubles and embedders. Production
+  // PackageRegistry always owns connectForCatalog(), which uses the same typed
+  // readiness classifier below the handler.
+  const client = await registry.getClient(pkg.id);
+  const readiness = await assessClientReadiness(pkg, client, {
+    listToolsTimeoutMs: FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
+  });
+  if (readiness.kind === "ready") return { kind: "connected", client };
+  if (readiness.kind === "auth_required") return { ...readiness, client };
+  return readiness;
+}
+
+function serverUnreachableResponse(
+  packageId: string,
+  catalog: Catalog,
+  failureClass: TransientConnectFailureClass,
+  error: unknown,
+): any {
+  const retryHint = catalog.getRetryHint?.(packageId);
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          package_id: packageId,
+          status: "server_unreachable",
+          last_error_class: failureClass,
+          retry_in_ms: retryHint?.retryInMs ?? null,
+          next_retry_at: retryHint?.retryAt ?? null,
+          retryable: true,
+          detail: formatError(error),
+        }, null, 2),
+      },
+    ],
+    isError: false,
+  };
+}
+
+function connectorUnavailableResponse(
+  packageId: string,
+  failureClass: PermanentConnectFailureClass,
+  error: unknown,
+): any {
+  return {
+    content: [{
+      type: "text",
+      text: JSON.stringify({
+        package_id: packageId,
+        status: "error",
+        last_error_class: failureClass,
+        detail: formatError(error),
+      }, null, 2),
+    }],
+    isError: false,
+  };
+}
 
 type AuthDelegationToolCandidate = {
   name?: unknown;
@@ -345,49 +427,59 @@ async function handleAuthenticateCore(
   if (!force) {
   try {
     logger.info("Checking if already authenticated", { package_id });
-    const client = await registry.getClient(package_id);
-    const health = client.healthCheck ? await client.healthCheck() : "ok";
-    logger.info("Client health check", { package_id, health });
+    const readiness = await getPackageReadiness(registry, pkg);
+    logger.info("Client readiness check", { package_id, readiness: readiness.kind });
+
+    if (readiness.kind === "transient_failure") {
+      return serverUnreachableResponse(
+        package_id,
+        catalog,
+        readiness.failureClass,
+        readiness.error,
+      );
+    }
+    if (readiness.kind === "permanent_failure") {
+      return connectorUnavailableResponse(
+        package_id,
+        readiness.failureClass,
+        readiness.error,
+      );
+    }
     
-    if (health === "ok") {
-      try {
-        logger.info("Testing tool access", { package_id });
-        // Timeout to prevent hanging on slow/unresponsive MCP servers
-        // Windows needs longer timeout due to antivirus/firewall checks on cold-start
-        const isWindows = process.platform === 'win32';
-        const defaultTimeoutMs = isWindows
-          ? PRE_CHECK_LIST_TOOLS_TIMEOUT_WINDOWS_MS
-          : PRE_CHECK_LIST_TOOLS_TIMEOUT_DEFAULT_MS;
-        const timeoutMs = Number(process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS) || defaultTimeoutMs;
-        const toolsPromise = client.listTools();
-        const timeoutPromise = new Promise<never>((_, reject) => 
-          setTimeout(() => reject(new Error(`listTools timed out after ${timeoutMs}ms`)), timeoutMs)
-        );
-        const tools = await Promise.race([toolsPromise, timeoutPromise]);
-        logger.info("Tools accessible", { package_id, tool_count: tools.length });
-        catalog.clearPackage(package_id);
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                package_id,
-                status: "already_authenticated",
-                message: "Package is already authenticated and connected",
-              }, null, 2),
-            },
-          ],
-          isError: false,
-        };
-      } catch (error) {
-        logger.info("Tool access failed, need to authenticate", { 
-          package_id,
-          error: formatError(error),
-        });
-      }
+    if (readiness.kind === "connected") {
+      catalog.clearPackage(package_id);
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              package_id,
+              status: "already_authenticated",
+              message: "Package is already authenticated and connected",
+            }, null, 2),
+          },
+        ],
+        isError: false,
+      };
     }
   } catch (error) {
-    logger.info("Client not available or errored", { 
+    const failure = classifyConnectorError(pkg, error);
+    if (failure.kind === "transient_failure") {
+      return serverUnreachableResponse(
+        package_id,
+        catalog,
+        failure.failureClass,
+        failure.error,
+      );
+    }
+    if (failure.kind === "permanent_failure") {
+      return connectorUnavailableResponse(
+        package_id,
+        failure.failureClass,
+        failure.error,
+      );
+    }
+    logger.info("Client not available or errored", {
       package_id,
       error: formatError(error),
     });
@@ -597,22 +689,34 @@ async function handleAuthenticateCore(
 
         clients.set(package_id, attemptHttpClient);
 
-        let health: "ok" | "error" | "needs_auth" | "timeout" = "timeout";
+        let readiness: ReadinessOutcome | { kind: "timeout" } = { kind: "timeout" };
         try {
-          const healthPromise = attemptHttpClient.healthCheck ? attemptHttpClient.healthCheck() : Promise.resolve("ok" as const);
-          const timeoutPromise = new Promise<"timeout">((resolve) =>
-            setTimeout(() => resolve("timeout"), HEALTH_CHECK_TIMEOUT_MS)
+          const healthPromise = assessClientReadiness(pkg, attemptHttpClient, {
+            listToolsTimeoutMs: FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
+          }).then(
+            (outcome): ReadinessOutcome =>
+              outcome.kind === "ready"
+                ? { kind: "connected", client: attemptHttpClient }
+                : outcome.kind === "auth_required"
+                  ? { ...outcome, client: attemptHttpClient }
+                  : outcome,
           );
-          health = await Promise.race([healthPromise, timeoutPromise]);
+          const timeoutPromise = new Promise<{ kind: "timeout" }>((resolve) =>
+            setTimeout(() => resolve({ kind: "timeout" }), POST_AUTH_READINESS_TIMEOUT_MS)
+          );
+          readiness = await Promise.race([healthPromise, timeoutPromise]);
         } catch (err) {
-          logger.warn("Connection verification failed - tokens saved but server rejected request. Try using a tool to confirm.", {
+          logger.warn("Connection verification failed after tokens were saved", {
             package_id,
             error: formatError(err)
           });
-          health = "error";
+          const failure = classifyConnectorError(pkg, err);
+          readiness = failure.kind === "auth_required"
+            ? { ...failure, client: attemptHttpClient }
+            : failure;
         }
 
-        if (health === "ok") {
+        if (readiness.kind === "connected") {
           logger.info("Authentication verified successfully", { package_id });
           catalog.clearPackage(package_id);
           return {
@@ -631,7 +735,7 @@ async function handleAuthenticateCore(
               isError: false,
             },
           };
-        } else if (health === "timeout") {
+        } else if (readiness.kind === "timeout") {
           logger.info("Authentication completed, verification pending (slow server)", { package_id });
           catalog.clearPackage(package_id);
           return {
@@ -650,8 +754,25 @@ async function handleAuthenticateCore(
               isError: false,
             },
           };
+        } else if (readiness.kind === "transient_failure") {
+          logger.warn("Authentication completed but connector readiness failed", {
+            package_id,
+            failure_class: readiness.failureClass,
+          });
+          return {
+            kind: "response",
+            response: serverUnreachableResponse(
+              package_id,
+              catalog,
+              readiness.failureClass,
+              readiness.error,
+            ),
+          };
         } else {
-          logger.error("Authentication verification failed", { package_id, health });
+          logger.error("Authentication verification failed", {
+            package_id,
+            readiness: readiness.kind,
+          });
           return {
             kind: "response",
             response: {
@@ -661,7 +782,7 @@ async function handleAuthenticateCore(
                   text: JSON.stringify({
                     package_id,
                     status: "error",
-                    message: `Authentication completed but verification failed (${health}). The OAuth tokens were saved, but the server rejected the connection. Try using a tool - if it fails, you may need to re-authenticate.`,
+                    message: `Authentication completed but verification failed (${readiness.kind}).`,
                   }, null, 2),
                 },
               ],
@@ -1044,9 +1165,11 @@ async function handleAuthenticateCore(
 
     clients.set(package_id, httpClient);
     
-    const health = httpClient.healthCheck ? await httpClient.healthCheck() : "needs_auth";
+    const finalReadiness = await assessClientReadiness(pkg, httpClient, {
+      listToolsTimeoutMs: FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
+    });
     
-    if (health === "ok") {
+    if (finalReadiness.kind === "ready") {
       catalog.clearPackage(package_id);
       return {
         content: [
@@ -1061,6 +1184,19 @@ async function handleAuthenticateCore(
         ],
         isError: false,
       };
+    } else if (finalReadiness.kind === "transient_failure") {
+      return serverUnreachableResponse(
+        package_id,
+        catalog,
+        finalReadiness.failureClass,
+        finalReadiness.error,
+      );
+    } else if (finalReadiness.kind === "permanent_failure") {
+      return connectorUnavailableResponse(
+        package_id,
+        finalReadiness.failureClass,
+        finalReadiness.error,
+      );
     } else {
       return {
         content: [
@@ -1092,6 +1228,27 @@ async function handleAuthenticateCore(
       };
     }
   } catch (error) {
+    const failure = classifyConnectorError(pkg, error);
+    if (failure.kind === "transient_failure") {
+      logger.warn("Connector server became unreachable during authentication", {
+        package_id,
+        failure_class: failure.failureClass,
+        error: formatError(error),
+      });
+      return serverUnreachableResponse(
+        package_id,
+        catalog,
+        failure.failureClass,
+        failure.error,
+      );
+    }
+    if (failure.kind === "permanent_failure") {
+      return connectorUnavailableResponse(
+        package_id,
+        failure.failureClass,
+        failure.error,
+      );
+    }
     logger.error("Authentication failed", {
       package_id,
       error: formatError(error),
