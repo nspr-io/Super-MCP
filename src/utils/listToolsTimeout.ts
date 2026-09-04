@@ -11,6 +11,7 @@ const LEGACY_ENV = "SUPER_MCP_LIST_TOOLS_TIMEOUT";
 
 let warnedAboutLegacy = false;
 let warnedAboutBoth = false;
+const warnedAboutClampedBudgets = new Set<string>();
 
 function parsePositiveInteger(
   envName: string,
@@ -28,8 +29,27 @@ function parsePositiveInteger(
   return perCallDefaultMs;
 }
 
+function clampToPerCallBudget(
+  envName: string,
+  configuredMs: number,
+  perCallDefaultMs: number,
+): number {
+  if (configuredMs <= perCallDefaultMs) return configuredMs;
+
+  const warningKey = `${envName}:${perCallDefaultMs}`;
+  if (!warnedAboutClampedBudgets.has(warningKey)) {
+    warnedAboutClampedBudgets.add(warningKey);
+    logger.warn("Configured listTools timeout exceeds per-call budget; using per-call maximum", {
+      env_name: envName,
+      configured_ms: configuredMs,
+      maximum_ms: perCallDefaultMs,
+    });
+  }
+  return perCallDefaultMs;
+}
+
 /**
- * Resolves the one process-wide listTools override over a per-call budget.
+ * Resolves the one process-wide listTools override within a per-call budget.
  * SUPER_MCP_LIST_TOOLS_TIMEOUT is removed in super-mcp 3.0.0.
  */
 export function resolveListToolsTimeoutMs(perCallDefaultMs: number): number {
@@ -47,7 +67,11 @@ export function resolveListToolsTimeoutMs(perCallDefaultMs: number): number {
         },
       );
     }
-    return parsePositiveInteger(PRIMARY_ENV, primary, perCallDefaultMs);
+    return clampToPerCallBudget(
+      PRIMARY_ENV,
+      parsePositiveInteger(PRIMARY_ENV, primary, perCallDefaultMs),
+      perCallDefaultMs,
+    );
   }
 
   if (legacy !== undefined) {
@@ -60,7 +84,11 @@ export function resolveListToolsTimeoutMs(perCallDefaultMs: number): number {
         },
       );
     }
-    return parsePositiveInteger(LEGACY_ENV, legacy, perCallDefaultMs);
+    return clampToPerCallBudget(
+      LEGACY_ENV,
+      parsePositiveInteger(LEGACY_ENV, legacy, perCallDefaultMs),
+      perCallDefaultMs,
+    );
   }
 
   return perCallDefaultMs;
@@ -69,4 +97,5 @@ export function resolveListToolsTimeoutMs(perCallDefaultMs: number): number {
 export function resetListToolsTimeoutWarningsForTests(): void {
   warnedAboutLegacy = false;
   warnedAboutBoth = false;
+  warnedAboutClampedBudgets.clear();
 }

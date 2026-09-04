@@ -435,7 +435,6 @@ export class HttpMcpClient implements McpClient {
   private usedStreamableHttpFallback: boolean = false;
   private oauthDiscoveryTrace: OAuthDiscoveryTraceEntry[] = [];
   private httpDispatchers?: HttpDispatchers;
-  private readonly httpDispatcherIsolation: OAuthDiagnosticsPayload["httpDispatcherIsolation"];
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
     this.packageId = packageId;
@@ -443,7 +442,6 @@ export class HttpMcpClient implements McpClient {
     this.oauthPort = options?.oauthPort ?? 5173;
     this.externalOAuthProvider = options?.oauthProvider;
     this.httpDispatchers = this.createHttpDispatchers(options?.loadUndici ?? loadUndiciModule);
-    this.httpDispatcherIsolation = this.httpDispatchers ? "active" : "unavailable";
     
     // Request queue to limit concurrent calls to this HTTP client
     this.requestQueue = new PQueue({ concurrency: HTTP_CONCURRENCY });
@@ -550,7 +548,7 @@ export class HttpMcpClient implements McpClient {
       callbackPort: this.oauthPort,
       dcrRedirectUris: this.simpleOAuthProvider?.getDcrRedirectUrisSent(),
       authorizeRedirectUri: this.simpleOAuthProvider?.getAuthorizeRedirectUri(),
-      httpDispatcherIsolation: this.httpDispatcherIsolation,
+      httpDispatcherIsolation: this.httpDispatchers ? "active" : "unavailable",
       probeVerdicts,
     };
   }

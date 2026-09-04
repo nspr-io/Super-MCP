@@ -112,10 +112,18 @@ describe("HttpMcpClient transport lifecycle", () => {
     expect(futureSdkGetInit.dispatcher).toBe(agents[1]);
     expect(futureSdkGetInit.dispatcher).not.toBe(requestDispatcher);
 
+    const activeSuffix = isolatedClient.getOAuthDiagnosticsSuffix();
+    const activePayload = JSON.parse(
+      activeSuffix.slice(OAUTH_DISCOVERY_TRACE_ERROR_MARKER.length),
+    );
+    expect(activePayload.httpDispatcherIsolation).toBe("active");
+
     await expect(isolatedClient.close()).resolves.toBeUndefined();
-    const suffix = isolatedClient.getOAuthDiagnosticsSuffix();
-    const payload = JSON.parse(suffix.slice(OAUTH_DISCOVERY_TRACE_ERROR_MARKER.length));
-    expect(payload.httpDispatcherIsolation).toBe("active");
+    const closedSuffix = isolatedClient.getOAuthDiagnosticsSuffix();
+    const closedPayload = JSON.parse(
+      closedSuffix.slice(OAUTH_DISCOVERY_TRACE_ERROR_MARKER.length),
+    );
+    expect(closedPayload.httpDispatcherIsolation).toBe("unavailable");
     expect(agents.every((agent) => agent.destroy?.mock.calls.length === 1)).toBe(true);
   });
 

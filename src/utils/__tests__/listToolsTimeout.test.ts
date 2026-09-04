@@ -38,11 +38,11 @@ describe("listTools timeout configuration", () => {
   });
 
   it("uses _MS when both names are configured and warns once", () => {
-    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS = "23000";
-    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT = "17000";
+    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS = "9000";
+    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT = "8000";
 
-    expect(resolveListToolsTimeoutMs(STEADY_STATE_LIST_TOOLS_TIMEOUT_MS)).toBe(23_000);
-    expect(resolveListToolsTimeoutMs(FIRST_USE_LIST_TOOLS_TIMEOUT_MS)).toBe(23_000);
+    expect(resolveListToolsTimeoutMs(STEADY_STATE_LIST_TOOLS_TIMEOUT_MS)).toBe(9_000);
+    expect(resolveListToolsTimeoutMs(FIRST_USE_LIST_TOOLS_TIMEOUT_MS)).toBe(9_000);
     expect(mockLogger.warn).toHaveBeenCalledTimes(1);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       "Both listTools timeout environment variables are set; using SUPER_MCP_LIST_TOOLS_TIMEOUT_MS",
@@ -54,16 +54,32 @@ describe("listTools timeout configuration", () => {
   });
 
   it("accepts the old name with one process-wide deprecation warning", () => {
-    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT = "17000";
+    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT = "7000";
 
-    expect(resolveListToolsTimeoutMs(STEADY_STATE_LIST_TOOLS_TIMEOUT_MS)).toBe(17_000);
-    expect(resolveListToolsTimeoutMs(FIRST_USE_LIST_TOOLS_TIMEOUT_MS)).toBe(17_000);
+    expect(resolveListToolsTimeoutMs(STEADY_STATE_LIST_TOOLS_TIMEOUT_MS)).toBe(7_000);
+    expect(resolveListToolsTimeoutMs(FIRST_USE_LIST_TOOLS_TIMEOUT_MS)).toBe(7_000);
     expect(mockLogger.warn).toHaveBeenCalledTimes(1);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       "SUPER_MCP_LIST_TOOLS_TIMEOUT is deprecated; use SUPER_MCP_LIST_TOOLS_TIMEOUT_MS",
       expect.objectContaining({
         removal_version: LEGACY_LIST_TOOLS_TIMEOUT_ENV_REMOVAL_VERSION,
       }),
+    );
+  });
+
+  it("clamps a process-wide override to each call site's maximum budget", () => {
+    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS = "60000";
+
+    expect(resolveListToolsTimeoutMs(STEADY_STATE_LIST_TOOLS_TIMEOUT_MS)).toBe(10_000);
+    expect(resolveListToolsTimeoutMs(FIRST_USE_LIST_TOOLS_TIMEOUT_MS)).toBe(30_000);
+    expect(mockLogger.warn).toHaveBeenCalledTimes(2);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "Configured listTools timeout exceeds per-call budget; using per-call maximum",
+      expect.objectContaining({ configured_ms: 60_000, maximum_ms: 10_000 }),
+    );
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      "Configured listTools timeout exceeds per-call budget; using per-call maximum",
+      expect.objectContaining({ configured_ms: 60_000, maximum_ms: 30_000 }),
     );
   });
 

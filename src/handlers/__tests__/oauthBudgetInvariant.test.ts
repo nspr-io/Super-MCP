@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   OAUTH_CALLBACK_TIMEOUT_MS,
   POST_AUTH_READINESS_TIMEOUT_MS,
@@ -13,6 +13,7 @@ import { REGISTRY_CONNECT_ATTEMPTS } from "../../registry.js";
 import {
   FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
   STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+  resolveListToolsTimeoutMs,
 } from "../../utils/listToolsTimeout.js";
 
 vi.mock("../../logging.js", () => ({
@@ -37,6 +38,10 @@ const DESKTOP_AUTHENTICATE_TOOL_TIMEOUT_MS = 620_000;
 // server start + the 500ms post-start settle.
 const SETUP_MARGIN_MS = 2_000;
 
+afterEach(() => {
+  delete process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS;
+});
+
 describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
   // Sentry showed ~13 production events failing at a razor-consistent ~370.4s:
   // users who FINISHED sign-in late in the callback window were told
@@ -51,9 +56,9 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
   // own health check and listTools race on the fresh client.
   //
   // Deliberately excluded (documented, not forgotten):
-  //  - env overrides (SUPER_MCP_LIST_TOOLS_TIMEOUT_MS and its deprecated alias,
-  //    SUPER_MCP_CONNECT_TIMEOUT_MS)
-  //    — ops knobs, not defaults (plan residue R18);
+  //  - SUPER_MCP_CONNECT_TIMEOUT_MS — an ops knob, not a default (plan residue
+  //    R18). The listTools override is included below: its per-call ceiling is
+  //    load-bearing because this floor path has only 16s of host margin.
   //  - request-queue (p-queue) scheduling delay ahead of the SDK listTools timer;
   //  - the SSE-fallback double-connect inside one attempt: it only triggers on
   //    negotiation errors (404/405/Missing sessionId — prompt HTTP responses),
@@ -82,6 +87,17 @@ describe("OAuth budget invariant (desktop outer budget vs inner legs)", () => {
     FINISH_AUTH_TIMEOUT_MS + // token exchange (httpClient.ts finishOAuth)
     CONNECT_TIMEOUT_MS + // post-exchange reconnect (httpClient.ts connectWithTimeout)
     POST_AUTH_READINESS_TIMEOUT_MS; // 30s SDK list + 5s queue/compat allowance (authenticate.ts)
+
+  it("a process-wide listTools override cannot inflate either budget leg", () => {
+    process.env.SUPER_MCP_LIST_TOOLS_TIMEOUT_MS = "60000";
+
+    expect(resolveListToolsTimeoutMs(STEADY_STATE_LIST_TOOLS_TIMEOUT_MS)).toBe(
+      STEADY_STATE_LIST_TOOLS_TIMEOUT_MS,
+    );
+    expect(resolveListToolsTimeoutMs(FIRST_USE_LIST_TOOLS_TIMEOUT_MS)).toBe(
+      FIRST_USE_LIST_TOOLS_TIMEOUT_MS,
+    );
+  });
 
   it("branch-aware worst-case sum of inner legs stays strictly inside the desktop authenticate budget", () => {
     // n=1 (single attempt — the kill-switch / no-rejection path): identical to
