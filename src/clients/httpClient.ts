@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import { createRequire } from "node:module";
 import PQueue from "p-queue";
 import { McpClient, PackageConfig, ReadResourceResult } from "../types.js";
 import { getLogger } from "../logging.js";
@@ -328,6 +329,16 @@ function createResponseNormalizingFetch(
 // limit concurrency to prevent overwhelming upstream servers and to provide
 // fair scheduling when multiple agents share the same MCP connection
 const HTTP_CONCURRENCY = 5;
+const HTTP_DISPATCHER_CONNECTIONS = 8;
+const HTTP_SESSION_TERMINATION_TIMEOUT_MS = 500;
+
+interface HttpDispatcher {
+  destroy(error?: Error): Promise<void>;
+}
+
+type UndiciModuleLoader = () => unknown;
+
+const loadUndiciModule: UndiciModuleLoader = () => createRequire(import.meta.url)("undici");
 
 export interface HttpMcpClientOptions {
   oauthPort?: number;
@@ -337,6 +348,8 @@ export interface HttpMcpClientOptions {
    * This allows the caller to pre-generate state for CSRF protection.
    */
   oauthProvider?: SimpleOAuthProvider;
+  /** Test seam for exercising the optional-undici fallback. */
+  loadUndici?: UndiciModuleLoader;
 }
 
 // Default timeout for connect() to prevent hanging on unresponsive OAuth
@@ -395,12 +408,14 @@ export class HttpMcpClient implements McpClient {
   private usedSseFallback: boolean = false;
   private usedStreamableHttpFallback: boolean = false;
   private oauthDiscoveryTrace: OAuthDiscoveryTraceEntry[] = [];
+  private httpDispatcher?: HttpDispatcher;
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
     this.packageId = packageId;
     this.config = config;
     this.oauthPort = options?.oauthPort ?? 5173;
     this.externalOAuthProvider = options?.oauthProvider;
+    this.httpDispatcher = this.createHttpDispatcher(options?.loadUndici ?? loadUndiciModule);
     
     // Request queue to limit concurrent calls to this HTTP client
     this.requestQueue = new PQueue({ concurrency: HTTP_CONCURRENCY });
@@ -414,6 +429,36 @@ export class HttpMcpClient implements McpClient {
       { name: "super-mcp-router", version: "0.1.0" },
       { capabilities: {} }
     );
+  }
+
+  private createHttpDispatcher(loadUndici: UndiciModuleLoader): HttpDispatcher | undefined {
+    try {
+      const undici = loadUndici();
+      if (
+        typeof undici !== "object" ||
+        undici === null ||
+        !("Agent" in undici) ||
+        typeof undici.Agent !== "function"
+      ) {
+        throw new Error("undici Agent export is unavailable");
+      }
+
+      const Agent = undici.Agent as new (options: { connections: number }) => HttpDispatcher;
+      const dispatcher = new Agent({ connections: HTTP_DISPATCHER_CONNECTIONS });
+      logger.debug("Using per-client undici dispatcher for HTTP MCP transport", {
+        package_id: this.packageId,
+        connections: HTTP_DISPATCHER_CONNECTIONS,
+      });
+      return dispatcher;
+    } catch (error) {
+      // Electron and embedders may provide a non-undici fetch. The extension is
+      // optional there, but the transport difference must remain observable.
+      logger.debug("Per-client HTTP dispatcher unavailable; using fetch defaults", {
+        package_id: this.packageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
   }
   
   private getStaticCredentials(): StaticOAuthCredentials | undefined {
@@ -898,9 +943,10 @@ export class HttpMcpClient implements McpClient {
       logger.debug("OAuth provider added to transport", { package_id: this.packageId });
     }
 
-    if (this.config.extra_headers) {
+    if (this.config.extra_headers || this.httpDispatcher) {
       options.requestInit = {
-        headers: this.config.extra_headers
+        ...(this.config.extra_headers && { headers: this.config.extra_headers }),
+        ...(this.httpDispatcher && { dispatcher: this.httpDispatcher }),
       };
     }
 
@@ -1002,10 +1048,11 @@ export class HttpMcpClient implements McpClient {
       queue_pending: this.requestQueue.pending,
     });
 
+    let closeError: unknown;
     try {
       // Clear any pending requests in the queue
       this.requestQueue.clear();
-      
+      await this.terminateHttpSession();
       await this.client.close();
       this.isConnected = false;
     } catch (error) {
@@ -1013,7 +1060,56 @@ export class HttpMcpClient implements McpClient {
         package_id: this.packageId,
         error: error instanceof Error ? error.message : String(error),
       });
-      throw error;
+      closeError = error;
+    } finally {
+      try {
+        await this.httpDispatcher?.destroy();
+      } catch (error) {
+        logger.warn("Failed to destroy HTTP dispatcher during client close", {
+          package_id: this.packageId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      this.httpDispatcher = undefined;
+    }
+
+    if (closeError) {
+      throw closeError;
+    }
+  }
+
+  private async terminateHttpSession(): Promise<void> {
+    const transport = this.transport;
+    if (!(transport instanceof StreamableHTTPClientTransport) || !transport.sessionId) {
+      return;
+    }
+
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const termination = transport.terminateSession();
+      const outcome = await Promise.race([
+        termination.then(() => "terminated" as const),
+        new Promise<"timed-out">((resolve) => {
+          timeout = setTimeout(() => resolve("timed-out"), HTTP_SESSION_TERMINATION_TIMEOUT_MS);
+        }),
+      ]);
+      if (outcome === "timed-out") {
+        logger.warn("Timed out terminating HTTP MCP session during client close", {
+          package_id: this.packageId,
+          timeout_ms: HTTP_SESSION_TERMINATION_TIMEOUT_MS,
+        });
+      }
+    } catch (error) {
+      // Session cleanup is best-effort. Local teardown must still finish even
+      // when the remote endpoint rejects DELETE or has stopped responding.
+      logger.warn("Failed to terminate HTTP MCP session during client close", {
+        package_id: this.packageId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
     }
   }
 
