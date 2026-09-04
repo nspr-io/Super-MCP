@@ -73,6 +73,8 @@ export interface OAuthDiagnosticsPayload {
   dcrRedirectUris?: string[];
   /** The exact redirect_uri on the authorize URL the browser/probe was sent to. */
   authorizeRedirectUri?: string;
+  /** Whether standalone GET streams and request traffic have separate pools. */
+  httpDispatcherIsolation: "active" | "unavailable";
   /** Per-attempt probe verdicts (earlier retry attempts first, own last). */
   probeVerdicts: OAuthProbeVerdictTraceEntry[];
 }
@@ -212,6 +214,7 @@ function createResponseNormalizingFetch(
     classification: OAuthDiscoveryClassification,
     statusClass: OAuthDiscoveryStatusClass,
   ) => void,
+  streamDispatcher?: HttpDispatcher,
 ): typeof fetch {
   // OAuth refresh / code-exchange failures (invalid_grant, invalid_client, …) hit the
   // authorization server's token endpoint. Scope error capture to that endpoint so a
@@ -285,6 +288,22 @@ function createResponseNormalizingFetch(
 
   return (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const discoveryClassification = classifyOAuthDiscoveryRequest(input);
+    const inputMethod =
+      typeof input === "object" &&
+      input !== null &&
+      "method" in input &&
+      typeof input.method === "string"
+        ? input.method
+        : "GET";
+    const requestMethod = (init?.method ?? inputMethod).toUpperCase();
+    // The SDK currently omits requestInit from its standalone GET, but that is
+    // not our isolation boundary. Always overwrite GET dispatching here so a
+    // future SDK version that spreads the request dispatcher still cannot put
+    // the long-lived SSE stream in the POST/DELETE request pool.
+    const effectiveInit =
+      requestMethod === "GET" && streamDispatcher
+        ? ({ ...init, dispatcher: streamDispatcher } as RequestInit)
+        : init;
     // Token-endpoint refresh POSTs run through the transactional path: re-read
     // disk under a per-package cross-process lock, short-circuit on a still-valid
     // disk token, present the freshest refresh token, and recover/clear on
@@ -293,9 +312,9 @@ function createResponseNormalizingFetch(
     let response: unknown;
     try {
       response =
-        refreshProvider && isOAuthTokenEndpoint(input) && isRefreshGrantBody(init)
-          ? await runRefreshTransaction({ provider: refreshProvider, baseFetch }, input, init)
-          : await baseFetch(input, init);
+        refreshProvider && isOAuthTokenEndpoint(input) && isRefreshGrantBody(effectiveInit)
+          ? await runRefreshTransaction({ provider: refreshProvider, baseFetch }, input, effectiveInit)
+          : await baseFetch(input, effectiveInit);
     } catch (error) {
       if (discoveryClassification) {
         onOAuthDiscoveryRequest?.(discoveryClassification, "network-error");
@@ -339,11 +358,15 @@ function createResponseNormalizingFetch(
 // limit concurrency to prevent overwhelming upstream servers and to provide
 // fair scheduling when multiple agents share the same MCP connection
 const HTTP_CONCURRENCY = 5;
-const HTTP_DISPATCHER_CONNECTIONS = 8;
-const HTTP_SESSION_TERMINATION_TIMEOUT_MS = 500;
+const HTTP_SESSION_TERMINATION_TIMEOUT_MS = 2_500;
 
 interface HttpDispatcher {
   destroy(error?: Error): Promise<void>;
+}
+
+interface HttpDispatchers {
+  request: HttpDispatcher;
+  stream: HttpDispatcher;
 }
 
 type UndiciModuleLoader = () => unknown;
@@ -411,14 +434,16 @@ export class HttpMcpClient implements McpClient {
   private usedSseFallback: boolean = false;
   private usedStreamableHttpFallback: boolean = false;
   private oauthDiscoveryTrace: OAuthDiscoveryTraceEntry[] = [];
-  private httpDispatcher?: HttpDispatcher;
+  private httpDispatchers?: HttpDispatchers;
+  private readonly httpDispatcherIsolation: OAuthDiagnosticsPayload["httpDispatcherIsolation"];
 
   constructor(packageId: string, config: PackageConfig, options?: HttpMcpClientOptions) {
     this.packageId = packageId;
     this.config = config;
     this.oauthPort = options?.oauthPort ?? 5173;
     this.externalOAuthProvider = options?.oauthProvider;
-    this.httpDispatcher = this.createHttpDispatcher(options?.loadUndici ?? loadUndiciModule);
+    this.httpDispatchers = this.createHttpDispatchers(options?.loadUndici ?? loadUndiciModule);
+    this.httpDispatcherIsolation = this.httpDispatchers ? "active" : "unavailable";
     
     // Request queue to limit concurrent calls to this HTTP client
     this.requestQueue = new PQueue({ concurrency: HTTP_CONCURRENCY });
@@ -434,7 +459,7 @@ export class HttpMcpClient implements McpClient {
     );
   }
 
-  private createHttpDispatcher(loadUndici: UndiciModuleLoader): HttpDispatcher | undefined {
+  private createHttpDispatchers(loadUndici: UndiciModuleLoader): HttpDispatchers | undefined {
     try {
       const undici = loadUndici();
       if (
@@ -446,17 +471,20 @@ export class HttpMcpClient implements McpClient {
         throw new Error("undici Agent export is unavailable");
       }
 
-      const Agent = undici.Agent as new (options: { connections: number }) => HttpDispatcher;
-      const dispatcher = new Agent({ connections: HTTP_DISPATCHER_CONNECTIONS });
-      logger.debug("Using per-client undici dispatcher for HTTP MCP transport", {
+      const Agent = undici.Agent as new () => HttpDispatcher;
+      const dispatchers = {
+        request: new Agent(),
+        stream: new Agent(),
+      };
+      logger.debug("Using separate undici dispatchers for HTTP MCP request and stream traffic", {
         package_id: this.packageId,
-        connections: HTTP_DISPATCHER_CONNECTIONS,
       });
-      return dispatcher;
+      return dispatchers;
     } catch (error) {
-      // Electron and embedders may provide a non-undici fetch. The extension is
-      // optional there, but the transport difference must remain observable.
-      logger.debug("Per-client HTTP dispatcher unavailable; using fetch defaults", {
+      // Undici is a declared dependency because this isolation is the Node 26
+      // starvation mitigation. Keep the fallback observable in normal logs and
+      // in the client's durable diagnostics rather than silently losing it.
+      logger.warn("HTTP dispatcher unavailable; stream/request isolation is inactive", {
         package_id: this.packageId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -522,6 +550,7 @@ export class HttpMcpClient implements McpClient {
       callbackPort: this.oauthPort,
       dcrRedirectUris: this.simpleOAuthProvider?.getDcrRedirectUrisSent(),
       authorizeRedirectUri: this.simpleOAuthProvider?.getAuthorizeRedirectUri(),
+      httpDispatcherIsolation: this.httpDispatcherIsolation,
       probeVerdicts,
     };
   }
@@ -546,7 +575,10 @@ export class HttpMcpClient implements McpClient {
   public attachOAuthDiscoveryTrace<T extends Error>(
     error: T,
     extras?: { priorProbeVerdicts?: OAuthProbeVerdictTraceEntry[] },
-  ): T & { oauthDiscoveryTrace: OAuthDiscoveryTraceEntry[] } {
+  ): T & {
+    oauthDiscoveryTrace: OAuthDiscoveryTraceEntry[];
+    httpDispatcherIsolation: OAuthDiagnosticsPayload["httpDispatcherIsolation"];
+  } {
     const payload = this.buildOAuthDiagnosticsPayload(extras);
     const markerIndex = error.message.lastIndexOf(OAUTH_DISCOVERY_TRACE_ERROR_MARKER);
     const baseMessage = markerIndex === -1 ? error.message : error.message.slice(0, markerIndex);
@@ -557,7 +589,16 @@ export class HttpMcpClient implements McpClient {
       value: payload.entries,
       writable: false,
     });
-    return error as T & { oauthDiscoveryTrace: OAuthDiscoveryTraceEntry[] };
+    Object.defineProperty(error, "httpDispatcherIsolation", {
+      configurable: true,
+      enumerable: true,
+      value: payload.httpDispatcherIsolation,
+      writable: false,
+    });
+    return error as T & {
+      oauthDiscoveryTrace: OAuthDiscoveryTraceEntry[];
+      httpDispatcherIsolation: OAuthDiagnosticsPayload["httpDispatcherIsolation"];
+    };
   }
 
   private isAuthLikeErrorMessage(message: string): boolean {
@@ -946,10 +987,10 @@ export class HttpMcpClient implements McpClient {
       logger.debug("OAuth provider added to transport", { package_id: this.packageId });
     }
 
-    if (this.config.extra_headers || this.httpDispatcher) {
+    if (this.config.extra_headers || this.httpDispatchers?.request) {
       options.requestInit = {
         ...(this.config.extra_headers && { headers: this.config.extra_headers }),
-        ...(this.httpDispatcher && { dispatcher: this.httpDispatcher }),
+        ...(this.httpDispatchers?.request && { dispatcher: this.httpDispatchers.request }),
       };
     }
 
@@ -969,6 +1010,7 @@ export class HttpMcpClient implements McpClient {
       (classification, statusClass) => {
         this.recordOAuthDiscoveryRequest(classification, statusClass);
       },
+      this.httpDispatchers?.stream,
     );
 
     return options;
@@ -1067,15 +1109,21 @@ export class HttpMcpClient implements McpClient {
       });
       closeError = error;
     } finally {
-      try {
-        await this.httpDispatcher?.destroy();
-      } catch (error) {
-        logger.warn("Failed to destroy HTTP dispatcher during client close", {
-          package_id: this.packageId,
-          error: error instanceof Error ? error.message : String(error),
-        });
+      const dispatchers = this.httpDispatchers;
+      this.httpDispatchers = undefined;
+      if (dispatchers) {
+        for (const [traffic, dispatcher] of Object.entries(dispatchers)) {
+          try {
+            await dispatcher.destroy();
+          } catch (error) {
+            logger.warn("Failed to destroy HTTP dispatcher during client close", {
+              package_id: this.packageId,
+              traffic,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
       }
-      this.httpDispatcher = undefined;
     }
 
     if (closeError) {
@@ -1099,7 +1147,7 @@ export class HttpMcpClient implements McpClient {
         }),
       ]);
       if (outcome === "timed-out") {
-        logger.warn("Timed out terminating HTTP MCP session during client close", {
+        logger.warn("Timed out terminating HTTP MCP session; server-side session was left behind", {
           package_id: this.packageId,
           timeout_ms: HTTP_SESSION_TERMINATION_TIMEOUT_MS,
         });

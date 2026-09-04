@@ -1,7 +1,11 @@
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { HttpMcpClient, type HttpMcpClientOptions } from "../httpClient.js";
+import {
+  HttpMcpClient,
+  OAUTH_DISCOVERY_TRACE_ERROR_MARKER,
+  type HttpMcpClientOptions,
+} from "../httpClient.js";
 import type { PackageConfig } from "../../types.js";
 
 const mockLogger = vi.hoisted(() => ({
@@ -30,14 +34,14 @@ function makeClient(id: string, options?: Record<string, unknown>): HttpMcpClien
 }
 
 interface TransportOptionsForTest {
-  fetch?: unknown;
+  fetch?: typeof fetch;
   requestInit?: {
     dispatcher?: FakeDispatcherForTest;
   };
 }
 
 interface FakeDispatcherForTest {
-  options?: { connections: number };
+  destroy?: () => Promise<void>;
 }
 
 function transportOptions(client: HttpMcpClient): TransportOptionsForTest {
@@ -50,24 +54,72 @@ describe("HttpMcpClient transport lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  it("isolates transport requests with a per-client dispatcher and degrades observably when undici is unavailable", () => {
-    const destroy = vi.fn(async () => {});
+  it("keeps standalone GET streams on a different dispatcher from POST requests even if the SDK spreads requestInit onto GET", async () => {
+    const agents: FakeAgent[] = [];
     class FakeAgent {
-      public readonly destroy = destroy;
+      public readonly destroy = vi.fn(async () => {});
 
-      constructor(public readonly options: { connections: number }) {}
+      constructor() {
+        agents.push(this);
+      }
     }
+    const baseFetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 200 }),
+    );
+    vi.stubGlobal("fetch", baseFetch);
 
     const isolatedClient = makeClient("isolated", {
       loadUndici: () => ({ Agent: FakeAgent }),
     });
     const isolatedOptions = transportOptions(isolatedClient);
+    const wrappedFetch = isolatedOptions.fetch;
+    const requestDispatcher = isolatedOptions.requestInit?.dispatcher;
 
-    expect(isolatedOptions.requestInit?.dispatcher).toBeInstanceOf(FakeAgent);
-    expect(isolatedOptions.requestInit?.dispatcher?.options).toEqual({ connections: 8 });
+    expect(agents).toHaveLength(2);
+    expect(requestDispatcher).toBe(agents[0]);
+    expect(wrappedFetch).toBeTypeOf("function");
 
+    await wrappedFetch!("https://mcp.example.com/mcp", { method: "GET" });
+    await wrappedFetch!("https://mcp.example.com/mcp", {
+      method: "POST",
+      dispatcher: requestDispatcher,
+    } as RequestInit);
+    await wrappedFetch!("https://mcp.example.com/mcp", {
+      method: "GET",
+      dispatcher: requestDispatcher,
+    } as RequestInit);
+
+    const capturedInit = (index: number): RequestInit & {
+      dispatcher?: FakeDispatcherForTest;
+    } => {
+      const init = baseFetch.mock.calls[index]?.[1];
+      if (!init) {
+        throw new Error(`fetch call ${index} did not receive an init`);
+      }
+      return init as RequestInit & { dispatcher?: FakeDispatcherForTest };
+    };
+    const firstGetInit = capturedInit(0);
+    const postInit = capturedInit(1);
+    const futureSdkGetInit = capturedInit(2);
+
+    expect(firstGetInit.dispatcher).toBe(agents[1]);
+    expect(postInit.dispatcher).toBe(requestDispatcher);
+    expect(firstGetInit.dispatcher).not.toBe(postInit.dispatcher);
+    expect(futureSdkGetInit.dispatcher).toBe(agents[1]);
+    expect(futureSdkGetInit.dispatcher).not.toBe(requestDispatcher);
+
+    await expect(isolatedClient.close()).resolves.toBeUndefined();
+    const suffix = isolatedClient.getOAuthDiagnosticsSuffix();
+    const payload = JSON.parse(suffix.slice(OAUTH_DISCOVERY_TRACE_ERROR_MARKER.length));
+    expect(payload.httpDispatcherIsolation).toBe("active");
+    expect(agents.every((agent) => agent.destroy?.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("warns and records durable diagnostics when dispatcher isolation is unavailable", () => {
     const fallbackClient = makeClient("fallback", {
       loadUndici: () => {
         throw new Error("undici unavailable");
@@ -77,10 +129,14 @@ describe("HttpMcpClient transport lifecycle", () => {
 
     expect(fallbackOptions.requestInit?.dispatcher).toBeUndefined();
     expect(fallbackOptions.fetch).toBeTypeOf("function");
-    expect(mockLogger.debug).toHaveBeenCalledWith(
+    expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.stringContaining("dispatcher unavailable"),
       expect.objectContaining({ package_id: "fallback" }),
     );
+
+    const suffix = fallbackClient.getOAuthDiagnosticsSuffix();
+    const payload = JSON.parse(suffix.slice(OAUTH_DISCOVERY_TRACE_ERROR_MARKER.length));
+    expect(payload.httpDispatcherIsolation).toBe("unavailable");
   });
 
   it("classifies a disconnected client as transport-unready rather than unauthenticated", async () => {
@@ -108,8 +164,9 @@ describe("HttpMcpClient transport lifecycle", () => {
   it("terminates an established HTTP session without letting a rejected or hung DELETE block close", async () => {
     vi.useFakeTimers();
 
-    const makeClosingClient = (id: string) => {
+    const makeClosingClient = (id: string, withSession = true) => {
       const destroy = vi.fn(async () => {});
+      const callOrder: string[] = [];
       const client = makeClient(id, {
         loadUndici: () => ({
           Agent: class {
@@ -119,37 +176,60 @@ describe("HttpMcpClient transport lifecycle", () => {
       });
       const transport = new StreamableHTTPClientTransport(
         new URL("https://mcp.example.com/mcp"),
-        { sessionId: `${id}-session` },
+        withSession ? { sessionId: `${id}-session` } : undefined,
       );
-      const closeSdkClient = vi.fn(async () => {});
+      const closeSdkClient = vi.fn(async () => {
+        callOrder.push("close");
+      });
       Object.assign(client as unknown as Record<string, unknown>, {
         transport,
         client: { close: closeSdkClient },
       });
-      return { client, transport, destroy, closeSdkClient };
+      return { client, transport, destroy, closeSdkClient, callOrder };
     };
 
     const rejected = makeClosingClient("rejected");
     const rejectedTermination = vi
       .spyOn(rejected.transport, "terminateSession")
-      .mockRejectedValue(new Error("DELETE failed"));
+      .mockImplementation(async () => {
+        rejected.callOrder.push("terminate");
+        throw new Error("DELETE failed");
+      });
 
     await expect(rejected.client.close()).resolves.toBeUndefined();
     expect(rejectedTermination).toHaveBeenCalledOnce();
     expect(rejected.closeSdkClient).toHaveBeenCalledOnce();
-    expect(rejected.destroy).toHaveBeenCalledOnce();
+    expect(rejected.callOrder).toEqual(["terminate", "close"]);
+    expect(rejected.destroy).toHaveBeenCalledTimes(2);
 
     const hung = makeClosingClient("hung");
     const hungTermination = vi
       .spyOn(hung.transport, "terminateSession")
-      .mockReturnValue(new Promise(() => {}));
+      .mockImplementation(() => {
+        hung.callOrder.push("terminate");
+        return new Promise(() => {});
+      });
 
     const closePromise = hung.client.close();
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(3_000);
 
     await expect(closePromise).resolves.toBeUndefined();
     expect(hungTermination).toHaveBeenCalledOnce();
     expect(hung.closeSdkClient).toHaveBeenCalledOnce();
-    expect(hung.destroy).toHaveBeenCalledOnce();
+    expect(hung.callOrder).toEqual(["terminate", "close"]);
+    expect(hung.destroy).toHaveBeenCalledTimes(2);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("server-side session was left behind"),
+      expect.objectContaining({ package_id: "hung", timeout_ms: 2_500 }),
+    );
+
+    const noSession = makeClosingClient("no-session", false);
+    const noSessionTermination = vi.spyOn(noSession.transport, "terminateSession");
+
+    await expect(noSession.client.close()).resolves.toBeUndefined();
+    expect(noSessionTermination).not.toHaveBeenCalled();
+    expect(noSession.closeSdkClient).toHaveBeenCalledOnce();
+    expect(noSession.callOrder).toEqual(["close"]);
+    expect(noSession.destroy).toHaveBeenCalledTimes(2);
   });
 });
