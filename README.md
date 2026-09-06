@@ -624,7 +624,7 @@ This repo is one of several open-source projects from Mindstone:
   Super-MCP as its tool router (source release in progress).
 - [mcp-servers](https://github.com/mindstone/mcp-servers) — source-available
   MCP connectors for popular SaaS tools; works with any MCP host.
-- [rebel-system](https://github.com/mindstone/rebel-system-oss) — the public
+- [rebel-system](https://github.com/mindstone/rebel-system) — the public
   Rebel system: skills, prompts, operators, help docs, and templates.
 - [meeting-note-recorder](https://github.com/mindstone/meeting-note-recorder)
   — meeting detection, recording, and live transcripts (the Rebel note-taker).
