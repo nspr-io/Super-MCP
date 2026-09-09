@@ -64,6 +64,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@modelcontextprotocol/server-filesystem": "2026.7.10",
     "@types/graceful-fs": "^4.1.9",
     "@types/node": "^20.0.0",
     "@types/proper-lockfile": "^4.1.4",

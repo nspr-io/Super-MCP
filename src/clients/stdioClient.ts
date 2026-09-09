@@ -1,4 +1,6 @@
 import { exec } from "child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import PQueue from "p-queue";
@@ -121,6 +123,308 @@ const STDIO_CONCURRENCY = 1;
 const STDERR_MAX_LINES = 50;
 const STDERR_MAX_BYTES = 16 * 1024; // 16 KiB
 
+/**
+ * The upstream filesystem server takes its allowed directories from argv (or the
+ * MCP roots protocol, which this router does not implement). It reads no
+ * environment variable for them — so `MCP_ALLOWED_SYMLINK_ROOTS`, which our own
+ * connectors consume, is inert here. Spawned with neither, it denies EVERY path,
+ * which is the defect this addresses: the reported symlinked-Space denial was a
+ * symptom, not the cause.
+ *
+ * Identity is established from the command form rather than a catalog id: the
+ * connector is typically hand-added and carries no catalog identity. Ambiguous
+ * wrappers and npm aliases fail closed so roots never reach an unrelated process.
+ */
+const STOCK_FILESYSTEM_PACKAGE = "@modelcontextprotocol/server-filesystem";
+const STOCK_FILESYSTEM_BINARY = "mcp-server-filesystem";
+const REDACTED_FILESYSTEM_ROOT = "[filesystem root redacted]";
+const MIN_REDACTABLE_FILESYSTEM_ROOT_LENGTH = 4;
+
+type FilesystemCommandKind = "npx" | "node" | "stock-filesystem-binary" | "other";
+
+type FilesystemInvocation =
+  | {
+      status: "recognized";
+      commandKind: Exclude<FilesystemCommandKind, "other">;
+      serverArgStart: number;
+    }
+  | {
+      status: "ambiguous" | "other";
+      commandKind: FilesystemCommandKind;
+    };
+
+type ParsedDeclaredRoots = {
+  roots: string[];
+  declaredCount: number;
+  parseable: boolean;
+};
+
+function commandBasename(command: string): string {
+  return command.split(/[\\/]/).pop() ?? "";
+}
+
+function commandNameMatches(command: string, expected: string): boolean {
+  return process.platform === "win32"
+    ? command.toLowerCase() === expected.toLowerCase()
+    : command === expected;
+}
+
+function isBareCommand(command: string): boolean {
+  return command === commandBasename(command);
+}
+
+function isNpxCommand(command: string): boolean {
+  const basename = commandBasename(command);
+  const hasNpxBasename = ["npx", "npx.cmd", "npx.exe"]
+    .some((candidate) => commandNameMatches(basename, candidate));
+  if (!hasNpxBasename) return false;
+  if (isBareCommand(command)) return true;
+  // Every other lane proves identity from the disk (the direct binary walks to a
+  // package.json, a node command is realpath-compared to process.execPath). An
+  // absolute path that does not exist would otherwise be recognised on its
+  // basename alone, leaving this the one lane resting entirely on a string.
+  return path.isAbsolute(command) && fs.existsSync(command);
+}
+
+function isNodeCommand(command: string, cwd: string | undefined): boolean {
+  const basename = commandBasename(command);
+  if (isBareCommand(command) && ["node", "node.exe"]
+    .some((candidate) => commandNameMatches(basename, candidate))) {
+    return true;
+  }
+
+  try {
+    const absoluteCommand = path.isAbsolute(command)
+      ? command
+      : path.resolve(cwd ?? process.cwd(), command);
+    return fs.realpathSync(absoluteCommand) === fs.realpathSync(process.execPath);
+  } catch {
+    return false;
+  }
+}
+
+function isDirectFilesystemBinary(command: string): boolean {
+  const basename = commandBasename(command);
+  return [STOCK_FILESYSTEM_BINARY, `${STOCK_FILESYSTEM_BINARY}.cmd`, `${STOCK_FILESYSTEM_BINARY}.exe`]
+    .some((candidate) => commandNameMatches(basename, candidate));
+}
+
+function looksLikeStockFilesystemToken(token: string): boolean {
+  return token === STOCK_FILESYSTEM_PACKAGE ||
+    token.startsWith(`${STOCK_FILESYSTEM_PACKAGE}@`) ||
+    isDirectFilesystemBinary(token) ||
+    token.replaceAll("\\", "/").includes(`/${STOCK_FILESYSTEM_PACKAGE}/`);
+}
+
+/** Exact package name, optionally followed by an npm version, tag, or range — never an alias/source. */
+function isStockFilesystemPackageSpecifier(specifier: string): boolean {
+  if (specifier === STOCK_FILESYSTEM_PACKAGE) return true;
+  if (!specifier.startsWith(`${STOCK_FILESYSTEM_PACKAGE}@`)) return false;
+  const requestedVersion = specifier.slice(STOCK_FILESYSTEM_PACKAGE.length + 1);
+  return requestedVersion.length > 0 && /^[0-9A-Za-z*+._~^<>=|\-\s]+$/.test(requestedVersion);
+}
+
+function directoryHasStockFilesystemPackageIdentity(directory: string): boolean {
+  const packageJsonPath = path.join(directory, "package.json");
+  if (!fs.existsSync(packageJsonPath)) return false;
+  const parsed: unknown = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  return typeof parsed === "object" && parsed !== null &&
+    "name" in parsed && parsed.name === STOCK_FILESYSTEM_PACKAGE;
+}
+
+function isEntrypointInsideStockFilesystemPackage(entrypoint: string, cwd: string | undefined): boolean {
+  try {
+    const absoluteEntrypoint = path.isAbsolute(entrypoint)
+      ? entrypoint
+      : path.resolve(cwd ?? process.cwd(), entrypoint);
+    const resolvedEntrypoint = fs.realpathSync(absoluteEntrypoint);
+    let directory = path.dirname(resolvedEntrypoint);
+
+    // npm installs Windows command shims as real files in node_modules/.bin,
+    // rather than the package-pointing symlinks used on POSIX.
+    if (commandNameMatches(path.basename(directory), ".bin")) {
+      const nodeModulesDirectory = path.dirname(directory);
+      if (commandNameMatches(path.basename(nodeModulesDirectory), "node_modules")) {
+        const siblingPackageDirectory = path.join(
+          nodeModulesDirectory,
+          ...STOCK_FILESYSTEM_PACKAGE.split("/"),
+        );
+        if (directoryHasStockFilesystemPackageIdentity(siblingPackageDirectory)) return true;
+      }
+    }
+
+    while (true) {
+      if (fs.existsSync(path.join(directory, "package.json"))) {
+        return directoryHasStockFilesystemPackageIdentity(directory);
+      }
+      const parent = path.dirname(directory);
+      if (parent === directory) return false;
+      directory = parent;
+    }
+  } catch {
+    return false;
+  }
+}
+
+function inspectNpxFilesystemInvocation(args: readonly string[]): FilesystemInvocation {
+  let index = 0;
+  while (args[index] === "-y" || args[index] === "--yes") index += 1;
+
+  const packageOption = args[index];
+  if (packageOption === "--package" || packageOption === "-p" ||
+      packageOption?.startsWith("--package=") || packageOption?.startsWith("-p=")) {
+    let packageSpecifier: string | undefined;
+    if (packageOption === "--package" || packageOption === "-p") {
+      packageSpecifier = args[index + 1];
+      index += 2;
+    } else {
+      packageSpecifier = packageOption.slice(packageOption.indexOf("=") + 1);
+      index += 1;
+    }
+
+    if (!packageSpecifier || !isStockFilesystemPackageSpecifier(packageSpecifier)) {
+      return {
+        status: packageSpecifier && looksLikeStockFilesystemToken(packageSpecifier) ? "ambiguous" : "other",
+        commandKind: "npx",
+      };
+    }
+    if (args[index] !== "--" || !isDirectFilesystemBinary(args[index + 1] ?? "")) {
+      return { status: "ambiguous", commandKind: "npx" };
+    }
+    return { status: "recognized", commandKind: "npx", serverArgStart: index + 2 };
+  }
+
+  if (args[index] === "--") index += 1;
+  const packageSpecifier = args[index];
+  if (packageSpecifier && isStockFilesystemPackageSpecifier(packageSpecifier)) {
+    const afterPackage = index + 1;
+    return {
+      status: "recognized",
+      commandKind: "npx",
+      serverArgStart: args[afterPackage] === "--" ? afterPackage + 1 : afterPackage,
+    };
+  }
+
+  return {
+    status: args.some(looksLikeStockFilesystemToken) ? "ambiguous" : "other",
+    commandKind: "npx",
+  };
+}
+
+function inspectFilesystemInvocation(config: PackageConfig): FilesystemInvocation {
+  const command = config.command ?? "";
+  const args = config.args ?? [];
+
+  if (isNpxCommand(command)) return inspectNpxFilesystemInvocation(args);
+
+  if (isDirectFilesystemBinary(command)) {
+    const isBareBinary = isBareCommand(command);
+    if (isBareBinary || isEntrypointInsideStockFilesystemPackage(command, config.cwd)) {
+      return { status: "recognized", commandKind: "stock-filesystem-binary", serverArgStart: 0 };
+    }
+    return { status: "ambiguous", commandKind: "stock-filesystem-binary" };
+  }
+
+  if (isNodeCommand(command, config.cwd)) {
+    const entrypointIndex = args[0] === "--" ? 1 : 0;
+    const entrypoint = args[entrypointIndex];
+    if (entrypoint && isEntrypointInsideStockFilesystemPackage(entrypoint, config.cwd)) {
+      return { status: "recognized", commandKind: "node", serverArgStart: entrypointIndex + 1 };
+    }
+    return {
+      status: args.some(looksLikeStockFilesystemToken) ? "ambiguous" : "other",
+      commandKind: "node",
+    };
+  }
+
+  return {
+    status: looksLikeStockFilesystemToken(command) || args.some(looksLikeStockFilesystemToken)
+      ? "ambiguous"
+      : "other",
+    commandKind: "other",
+  };
+}
+
+function isUsableRoot(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 &&
+    !value.includes("\0") && path.isAbsolute(value);
+}
+
+function normalizeFilesystemRootForRedaction(root: string): string {
+  let normalized = root.trim().replace(/^["']|["']$/g, "").trim();
+  normalized = path.normalize(normalized);
+
+  const pathRoot = path.parse(normalized).root;
+  if (normalized.length > pathRoot.length) {
+    normalized = normalized.replace(/[\\/]+$/, "");
+  }
+  if (/^[a-z]:/.test(normalized)) {
+    normalized = normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+  return normalized;
+}
+
+function addFilesystemRootRedactionVariants(redactions: Set<string>, root: string): void {
+  for (const candidate of [root, normalizeFilesystemRootForRedaction(root)]) {
+    if (candidate.length >= MIN_REDACTABLE_FILESYSTEM_ROOT_LENGTH) {
+      redactions.add(candidate);
+    }
+  }
+}
+
+function buildFilesystemRootRedactions(roots: readonly string[]): string[] {
+  const redactions = new Set<string>();
+  for (const root of roots) {
+    // isUsableRoot tests path.isAbsolute on the RAW string, so a root carrying a
+    // leading quote or leading whitespace would never reach the normalizer and
+    // would pass through a diagnostic verbatim. Offer the normalized form as a
+    // candidate too, and accept the root when EITHER shape is usable. Router-
+    // supplied roots cannot take those forms — supply and redaction share this
+    // gate — so this only widens coverage for directories a user typed. `~` is
+    // deliberately not expanded: the child's HOME is not the router's, so any
+    // expansion here would be a guess, and guessing is what this design refuses.
+    const normalizedRoot = normalizeFilesystemRootForRedaction(root);
+    if (!isUsableRoot(root) && !isUsableRoot(normalizedRoot)) continue;
+
+    addFilesystemRootRedactionVariants(redactions, root);
+    addFilesystemRootRedactionVariants(redactions, normalizedRoot);
+    const absoluteRoot = path.resolve(
+      isUsableRoot(root) ? root : normalizedRoot,
+    );
+    addFilesystemRootRedactionVariants(redactions, absoluteRoot);
+    try {
+      addFilesystemRootRedactionVariants(redactions, fs.realpathSync(absoluteRoot));
+    } catch {
+      // A configured root may not exist yet; the supplied and normalized forms
+      // remain protected without preventing the child from receiving it.
+    }
+  }
+  return [...redactions].sort((left, right) => right.length - left.length);
+}
+
+function diagnosticCommandLabel(command: string | undefined): string {
+  const effectiveCommand = command || "echo";
+  return commandBasename(effectiveCommand) || "configured executable";
+}
+
+/** Parse the roots the host serialises into REBEL_ALLOWED_SYMLINK_ROOTS. */
+function parseDeclaredRoots(raw: string | undefined): ParsedDeclaredRoots {
+  if (!raw?.trim()) return { roots: [], declaredCount: 0, parseable: true };
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return { roots: [], declaredCount: 0, parseable: false };
+    }
+    return {
+      roots: parsed.filter(isUsableRoot),
+      declaredCount: parsed.length,
+      parseable: true,
+    };
+  } catch {
+    return { roots: [], declaredCount: 0, parseable: false };
+  }
+}
+
 export class StdioMcpClient implements McpClient {
   private client: Client;
   private transport: StdioClientTransport;
@@ -148,6 +452,10 @@ export class StdioMcpClient implements McpClient {
   // CODE in its onclose handler (`(_code) => ...`), so the numeric exit code is
   // NOT reachable through the public SDK API — we can only observe THAT it closed.
   private childClosedThisCall = false;
+  // Supplied, normalized, and canonical roots known to the stock filesystem
+  // invocation, precomputed at spawn for narrow startup-diagnostic redaction.
+  private filesystemSensitiveRoots: string[] = [];
+  private warnedAboutAmbiguousFilesystemInvocation = false;
 
   constructor(packageId: string, config: PackageConfig) {
     this.packageId = packageId;
@@ -189,6 +497,93 @@ export class StdioMcpClient implements McpClient {
     this.spawnObservedThisCall = false;
     this.spawnErrorMessage = null;
     this.childClosedThisCall = false;
+  }
+
+  /**
+   * Supply the stock filesystem server the directories it needs, and only then.
+   *
+   * Rebel already computes both the workspace root and the resolved declared-Space
+   * targets for this spawn; the package simply cannot read them from the env, so
+   * they are passed as argv, which is the mechanism it does support. A user who
+   * specified directories keeps exactly what they wrote — byte-identical, no
+   * append, no reorder.
+   */
+  private resolveFilesystemArgs(
+    invocation: FilesystemInvocation,
+    workspacePath: string | undefined,
+    rebelRootsTrimmed: string | undefined,
+  ): string[] {
+    const args = this.config.args ?? [];
+    this.filesystemSensitiveRoots = [];
+
+    if (invocation.status !== "recognized") {
+      if (invocation.status === "ambiguous" && !this.warnedAboutAmbiguousFilesystemInvocation) {
+        logger.warn(
+          "filesystem connector: invocation not recognised; allowed roots were not supplied",
+          {
+            package_id: this.packageId,
+            command_kind: invocation.commandKind,
+            configured_argument_count: args.length,
+          },
+        );
+        this.warnedAboutAmbiguousFilesystemInvocation = true;
+      }
+      return args;
+    }
+
+    const userDirs = args.slice(invocation.serverArgStart);
+    if (userDirs.length > 0) {
+      logger.info("filesystem connector: using user-specified directories unchanged", {
+        package_id: this.packageId,
+        user_directory_count: userDirs.length,
+      });
+      this.filesystemSensitiveRoots = buildFilesystemRootRedactions(userDirs);
+      return args;
+    }
+
+    const parsedDeclaredRoots = parseDeclaredRoots(rebelRootsTrimmed);
+    const workspaceRootCount = workspacePath === undefined ? 0 : 1;
+    const usableWorkspaceRoots = isUsableRoot(workspacePath) ? [workspacePath] : [];
+    const roots = [...usableWorkspaceRoots, ...parsedDeclaredRoots.roots];
+    this.filesystemSensitiveRoots = buildFilesystemRootRedactions(roots);
+
+    const droppedRoot = usableWorkspaceRoots.length !== workspaceRootCount ||
+      !parsedDeclaredRoots.parseable ||
+      parsedDeclaredRoots.roots.length !== parsedDeclaredRoots.declaredCount;
+    if (droppedRoot) {
+      logger.warn("filesystem connector: unusable default roots were ignored", {
+        package_id: this.packageId,
+        declared_root_count: parsedDeclaredRoots.declaredCount,
+        usable_declared_root_count: parsedDeclaredRoots.roots.length,
+        workspace_root_count: workspaceRootCount,
+        usable_workspace_root_count: usableWorkspaceRoots.length,
+        declared_roots_parseable: parsedDeclaredRoots.parseable,
+      });
+    }
+
+    if (roots.length === 0) {
+      throw new Error(
+        `filesystem connector has no usable allowed directories ` +
+        `(workspace ${usableWorkspaceRoots.length}/${workspaceRootCount}, ` +
+        `declared ${parsedDeclaredRoots.roots.length}/${parsedDeclaredRoots.declaredCount})`,
+      );
+    }
+
+    // Count only — the paths carry account and mount names and this log is not private.
+    logger.info("filesystem connector: supplying allowed directories at spawn", {
+      package_id: this.packageId,
+      workspace_root_count: usableWorkspaceRoots.length,
+      declared_space_root_count: parsedDeclaredRoots.roots.length,
+    });
+    return [...args, ...roots];
+  }
+
+  private redactFilesystemRoots(value: string | null): string | null {
+    if (value === null) return null;
+    return this.filesystemSensitiveRoots.reduce(
+      (redacted, root) => redacted.split(root).join(REDACTED_FILESYSTEM_ROOT),
+      value,
+    );
   }
 
   /**
@@ -237,7 +632,7 @@ export class StdioMcpClient implements McpClient {
     const lines = [...this.stderrRing];
     if (this.stderrPartial.length > 0) lines.push(this.stderrPartial);
     if (lines.length === 0) return null;
-    return lines.join("\n");
+    return this.redactFilesystemRoots(lines.join("\n"));
   }
 
   async connect(): Promise<void> {
@@ -277,13 +672,12 @@ export class StdioMcpClient implements McpClient {
       mergedEnv = { ...(this.config.env ?? {}), MCP_WORKSPACE_PATH: workspacePath };
     }
 
-    // Declared-Space symlink roots injection — scoped to the openai-image
-    // connector ONLY. Unscoped injection would leak every declared-Space
-    // absolute path (which carries account/mount names) to unrelated
-    // third-party stdio connectors. The host serialises the roots into
-    // REBEL_ALLOWED_SYMLINK_ROOTS at super-mcp spawn (same seam as
-    // REBEL_WORKSPACE_PATH); the connector re-canonicalises each entry per
-    // call, mirroring the built-in file tools' `checkZone`. See
+    // Declared-Space symlink roots have exactly two consumers. The openai-image
+    // connector receives them through MCP_ALLOWED_SYMLINK_ROOTS; a positively
+    // identified stock filesystem server receives validated roots through argv.
+    // Nothing else receives them because the paths carry account/mount names.
+    // The host serialises the roots into REBEL_ALLOWED_SYMLINK_ROOTS at
+    // super-mcp spawn (same seam as REBEL_WORKSPACE_PATH). See
     // docs/plans/260724_openai-image-fence-timeout/PLAN.md Stage 4 (2).
     //
     // The `MCP_` prefix follows the OSS-connector convention noted above —
@@ -294,10 +688,18 @@ export class StdioMcpClient implements McpClient {
       mergedEnv = { ...(mergedEnv ?? {}), MCP_ALLOWED_SYMLINK_ROOTS: rebelRootsTrimmed };
     }
 
+    const filesystemInvocation = inspectFilesystemInvocation(this.config);
+    const commandLabel = diagnosticCommandLabel(this.config.command);
+
     logger.info("Connecting to stdio MCP", {
       package_id: this.packageId,
-      command: this.config.command,
-      args: this.config.args,
+      command: commandLabel,
+      command_kind: filesystemInvocation.commandKind,
+      configured_argument_count: this.config.args?.length ?? 0,
+      filesystem_identity: filesystemInvocation.status,
+      filesystem_package: filesystemInvocation.status === "recognized"
+        ? STOCK_FILESYSTEM_PACKAGE
+        : undefined,
       workspace: workspacePath ? 'set' : 'unset',
       // Boolean only — never log the raw roots value (carries account/mount names).
       allowed_symlink_roots: rebelRootsTrimmed ? 'set' : 'unset',
@@ -305,7 +707,7 @@ export class StdioMcpClient implements McpClient {
 
     logger.debug("stdio subprocess workspace env (debug only)", {
       package_id: this.packageId,
-      workspace_path: workspacePath ?? null,
+      workspace_path_set: Boolean(workspacePath),
       // Boolean only — values are sensitive (see SENSITIVE_ENV_KEY_EXACT).
       allowed_symlink_roots_set: Boolean(rebelRootsTrimmed),
     });
@@ -330,9 +732,14 @@ export class StdioMcpClient implements McpClient {
       // PassThrough IMMEDIATELY (before start()), so we can attach a listener
       // before client.connect() and not lose early child error output (B1).
       // Let the SDK handle environment variable merging with safe defaults.
+      const spawnArgs = this.resolveFilesystemArgs(
+        filesystemInvocation,
+        workspacePath,
+        rebelRootsTrimmed,
+      );
       this.transport = new StdioClientTransport({
         command: this.config.command || "echo",
-        args: this.config.args || [],
+        args: spawnArgs,
         env: mergedEnv,
         cwd: this.config.cwd,
         stderr: "pipe",
@@ -370,7 +777,8 @@ export class StdioMcpClient implements McpClient {
         package_id: this.packageId,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const rawErrorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage = this.redactFilesystemRoots(rawErrorMessage) ?? "Unknown connection error";
 
       // Per-call diagnostics (B1): give the next investigator enough to tell a
       // fresh-child death (stderr present, spawn observed) from a reused/closed
@@ -378,12 +786,14 @@ export class StdioMcpClient implements McpClient {
       const stderrTail = this.getStderrTail();
       const childExitObserved = this.childClosedThisCall;
       const spawnObserved = this.spawnObservedThisCall;
-      const spawnErrorMessage = this.spawnErrorMessage;
+      const spawnErrorMessage = this.redactFilesystemRoots(this.spawnErrorMessage);
 
       logger.error("Failed to connect to stdio MCP", {
         package_id: this.packageId,
-        command: this.config.command,
-        args: this.config.args,
+        command: commandLabel,
+        command_kind: filesystemInvocation.commandKind,
+        configured_argument_count: this.config.args?.length ?? 0,
+        filesystem_identity: filesystemInvocation.status,
         error: errorMessage,
         // B1 diagnostics:
         stderr_tail: stderrTail,
@@ -400,23 +810,26 @@ export class StdioMcpClient implements McpClient {
       
       // Check common issues
       if (errorMessage.includes("ENOENT") || errorMessage.includes("not found")) {
-        diagnosticMessage += `\n❌ Command not found: '${this.config.command}'`;
+        diagnosticMessage += `\n❌ Command not found: '${commandLabel}'`;
         diagnosticMessage += `\nPossible fixes:`;
-        diagnosticMessage += `\n  1. Install the MCP server: npm install -g ${this.config.command}`;
+        diagnosticMessage += `\n  1. Install or repair the configured MCP server`;
         diagnosticMessage += `\n  2. If using npx, ensure Node.js is installed`;
         diagnosticMessage += `\n  3. Check if the command path is correct`;
-        if (this.config.command === "npx" && this.config.args?.[0]) {
-          diagnosticMessage += `\n  4. Try installing the package: npm install -g ${this.config.args[0]}`;
+        if (filesystemInvocation.status === "recognized" &&
+            filesystemInvocation.commandKind === "npx") {
+          diagnosticMessage += `\n  4. Try installing the package: npm install -g ${STOCK_FILESYSTEM_PACKAGE}`;
         }
       } else if (errorMessage.includes("EACCES") || errorMessage.includes("permission")) {
-        diagnosticMessage += `\n❌ Permission denied for command: '${this.config.command}'`;
+        diagnosticMessage += `\n❌ Permission denied for command: '${commandLabel}'`;
         diagnosticMessage += `\nPossible fixes:`;
-        diagnosticMessage += `\n  1. Check file permissions: chmod +x ${this.config.command}`;
+        diagnosticMessage += `\n  1. Check the configured executable's file permissions`;
         diagnosticMessage += `\n  2. Ensure you have execute permissions`;
       } else if (errorMessage.includes("spawn")) {
         diagnosticMessage += `\n❌ Failed to spawn process`;
-        diagnosticMessage += `\nCommand: ${this.config.command} ${this.config.args?.join(" ") || ""}`;
-        diagnosticMessage += `\nWorking directory: ${this.config.cwd || process.cwd()}`;
+        diagnosticMessage += `\nCommand: ${commandLabel}`;
+        diagnosticMessage += `\nCommand type: ${filesystemInvocation.commandKind}`;
+        diagnosticMessage += `\nConfigured argument count: ${this.config.args?.length ?? 0}`;
+        diagnosticMessage += `\nWorking directory configured: ${this.config.cwd ? "yes" : "no"}`;
       } else {
         diagnosticMessage += `\n❌ ${errorMessage}`;
       }

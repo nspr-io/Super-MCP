@@ -257,7 +257,7 @@ describe('StdioMcpClient workspace env propagation', () => {
     );
   });
 
-  it('emits DEBUG log with raw workspace_path for diagnostics', async () => {
+  it('emits DEBUG workspace presence without logging the raw path', async () => {
     setWorkspaceEnv({ rebel: '/diag/workspace', mcp: undefined });
     const client = createClient();
 
@@ -267,9 +267,10 @@ describe('StdioMcpClient workspace env propagation', () => {
       'stdio subprocess workspace env (debug only)',
       expect.objectContaining({
         package_id: 'nano-banana',
-        workspace_path: '/diag/workspace',
+        workspace_path_set: true,
       }),
     );
+    expect(JSON.stringify(mocks.logger.debug.mock.calls)).not.toContain('/diag/workspace');
   });
 
   it('trims leading/trailing whitespace from workspace value', async () => {
