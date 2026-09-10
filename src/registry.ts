@@ -982,9 +982,9 @@ export class PackageRegistry {
    * is returned alone. Otherwise we collect every package whose id starts with
    * `${alias}-`.
    *
-   * Used by useTool's R2 alias resolver. The caller picks the unique match
-   * (and emits a telemetry breadcrumb) or surfaces an ambiguity error listing
-   * every candidate. The lookup is case-insensitive.
+   * Used by the shared package resolver. The resolver picks the unique match
+   * or surfaces an ambiguity result listing every candidate. The lookup is
+   * case-insensitive.
    */
   findPackagesByAlias(alias: string): PackageConfig[] {
     if (!alias) return [];

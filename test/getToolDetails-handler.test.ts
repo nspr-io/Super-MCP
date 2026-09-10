@@ -4,9 +4,10 @@ import { handleGetToolDetails } from '../src/handlers/getToolDetails.js';
 import { handleListTools } from '../src/handlers/listTools.js';
 import { handleSearchTools, invalidateSearchCache } from '../src/handlers/searchTools.js';
 import type { Catalog } from '../src/catalog.js';
-import type { PackageRegistry } from '../src/registry.js';
+import { PackageRegistry } from '../src/registry.js';
 import { registerHttpApiRoutes } from '../src/server.js';
 import { ERROR_CODES } from '../src/types.js';
+import { PACKAGE_DISCOVERY_HINT } from '../src/utils/normalizeInput.js';
 
 const { mockLogger, mockToolNotesStore } = vi.hoisted(() => ({
   mockLogger: {
@@ -147,6 +148,17 @@ function createMockRegistry(catalogIds: Record<string, string> = {}): PackageReg
       ...(catalogIds[pkgId] ? { catalogId: catalogIds[pkgId] } : {}),
     })),
   } as unknown as PackageRegistry;
+}
+
+function createPackageRegistry(packageIds: string[]): PackageRegistry {
+  return new PackageRegistry({
+    packages: packageIds.map(id => ({
+      id,
+      name: id,
+      transport: 'stdio',
+      visibility: 'default',
+    })),
+  });
 }
 
 /** Parse the JSON result from handleGetToolDetails response */
@@ -321,6 +333,89 @@ describe('handleGetToolDetails', () => {
     mockSecurityPolicy.isToolBlocked.mockReturnValue({ blocked: false });
     mockSecurityPolicy.isUserDisabled.mockReturnValue(false);
     mockSecurityPolicy.isAdminDisabled.mockReturnValue(false);
+  });
+
+  describe('package family resolution', () => {
+    it('returns tool details from the unique configured account for a bare family id', async () => {
+      const catalog = createMockCatalog({
+        'calendar-account-a': [makeToolDef('list_events')],
+      }, {
+        calendar: 'error',
+        'calendar-account-a': 'ready',
+      }, {
+        calendar: "Package 'calendar' not found in configuration",
+      });
+      const packageRegistry = createPackageRegistry(['calendar-account-a']);
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['calendar__list_events'] },
+        catalog,
+        packageRegistry,
+      );
+
+      const [tool] = parseResult(result).tools;
+      expect(tool).toEqual(
+        expect.objectContaining({
+          package_id: 'calendar-account-a',
+          tool_id: 'calendar-account-a__list_events',
+        }),
+      );
+      expect(tool.not_found).toBeUndefined();
+      expect(tool.error).toBeUndefined();
+      expect(catalog.getTool).toHaveBeenCalledWith('calendar-account-a', 'list_events');
+    });
+
+    it('keeps two configured accounts ambiguous without consulting readiness', async () => {
+      const catalog = createMockCatalog(
+        { 'calendar-account-a': [makeToolDef('list_events')] },
+        {
+          'calendar-account-a': 'ready',
+          'calendar-account-b': 'auth_required',
+        },
+      );
+      const packageRegistry = createPackageRegistry([
+        'calendar-account-a',
+        'calendar-account-b',
+      ]);
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['calendar__list_events'] },
+        catalog,
+        packageRegistry,
+      );
+
+      expect(parseResult(result).tools).toEqual([
+        expect.objectContaining({
+          package_id: 'calendar',
+          tool_id: 'calendar__list_events',
+          error: 'package_ambiguous',
+          candidates: ['calendar-account-a', 'calendar-account-b'],
+          description: expect.stringMatching(/calendar-account-a.*calendar-account-b/),
+        }),
+      ]);
+      expect(catalog.getPackageStatus).not.toHaveBeenCalled();
+    });
+
+    it('keeps an unknown family as not found', async () => {
+      const catalog = createMockCatalog({});
+      const packageRegistry = createPackageRegistry([]);
+
+      const result = await handleGetToolDetails(
+        { tool_ids: ['calendar__list_events'] },
+        catalog,
+        packageRegistry,
+      );
+
+      expect(parseResult(result).tools).toEqual([
+        expect.objectContaining({
+          package_id: 'calendar',
+          tool_id: 'calendar__list_events',
+          not_found: true,
+          description: expect.stringContaining(PACKAGE_DISCOVERY_HINT),
+        }),
+      ]);
+      expect(catalog.getPackageStatus).not.toHaveBeenCalled();
+    });
   });
 
   // -----------------------------------------------------------------------

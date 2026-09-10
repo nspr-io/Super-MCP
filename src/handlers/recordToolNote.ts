@@ -1,7 +1,15 @@
 import { Catalog } from "../catalog.js";
 import { ERROR_CODES } from "../types.js";
 import { getLogger } from "../logging.js";
-import { coerceStringifiedBoolean } from "../utils/normalizeInput.js";
+import {
+  coerceStringifiedBoolean,
+  PACKAGE_DISCOVERY_HINT,
+} from "../utils/normalizeInput.js";
+import {
+  formatAmbiguousPackageMessage,
+  resolvePackageId,
+  type PackageResolutionRegistry,
+} from "../utils/packageResolution.js";
 import {
   getToolNotesStore,
   normalizeNoteText,
@@ -43,6 +51,7 @@ function invalidParams(message: string): never {
 export async function handleRecordToolNote(
   input: RecordToolNoteInput,
   catalog: Catalog,
+  registry: PackageResolutionRegistry,
   store?: ToolNotesStore,
 ): Promise<any> {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -50,7 +59,7 @@ export async function handleRecordToolNote(
   }
 
   const notesStore = resolveStore(store);
-  const package_id = input.package_id;
+  let package_id = input.package_id;
   const tool_id = input.tool_id;
   const remove = coerceStringifiedBoolean(input.remove, {
     handler: "record_tool_note",
@@ -88,6 +97,31 @@ export async function handleRecordToolNote(
     }
     noteToRecord = note;
   }
+
+  const packageResolution = resolvePackageId(registry, package_id);
+  if (packageResolution.outcome === "ambiguous") {
+    return makeResponse(
+      {
+        status: "ambiguous",
+        message: formatAmbiguousPackageMessage(
+          package_id,
+          packageResolution.candidateIds,
+        ),
+        candidates: packageResolution.candidateIds,
+      },
+      true,
+    );
+  }
+  if (packageResolution.outcome === "not_found") {
+    return makeResponse(
+      {
+        status: "not_found",
+        message: `Package not found: ${package_id}. ${PACKAGE_DISCOVERY_HINT}`,
+      },
+      true,
+    );
+  }
+  package_id = packageResolution.packageId;
 
   const cachedTool = await catalog.getTool(package_id, tool_id);
   if (!cachedTool && tool_id.includes("__")) {

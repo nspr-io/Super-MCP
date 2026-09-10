@@ -984,7 +984,7 @@ Use detail="lite" for lightweight browsing (names + descriptions only), or detai
               handleSearchTools(args as any, registry, catalog, catalogRefresher));
 
           case "record_tool_note":
-            return await handleRecordToolNote(args as any, catalog);
+            return await handleRecordToolNote(args as any, catalog, registry);
 
           default:
             throw {

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { handleListTools } from '../src/handlers/listTools.js';
 import type { Catalog } from '../src/catalog.js';
-import type { PackageRegistry } from '../src/registry.js';
+import { PackageRegistry } from '../src/registry.js';
 import { ERROR_CODES } from '../src/types.js';
 
 // Suppress logger output during tests
@@ -88,9 +88,64 @@ function createMockCatalog(tools: ReturnType<typeof makeTool>[]): Catalog {
 
 /** Create a minimal mock registry */
 function createMockRegistry(catalogId?: string): PackageRegistry {
+  const packageConfig = {
+    id: 'test-pkg',
+    name: 'Test package',
+    transport: 'stdio' as const,
+    visibility: 'default' as const,
+    ...(catalogId ? { catalogId } : {}),
+  };
   return {
-    getPackage: vi.fn().mockReturnValue(catalogId ? { catalogId } : undefined),
+    getPackage: vi.fn().mockImplementation((packageId: string) =>
+      packageId === packageConfig.id ? packageConfig : undefined
+    ),
+    findPackagesByAlias: vi.fn().mockReturnValue([]),
   } as unknown as PackageRegistry;
+}
+
+function createPackageRegistry(packageIds: string[]): PackageRegistry {
+  return new PackageRegistry({
+    packages: packageIds.map(id => ({
+      id,
+      name: id,
+      transport: 'stdio',
+      visibility: 'default',
+    })),
+  });
+}
+
+function createPackageResolutionCatalog(
+  statuses: Record<string, 'ready' | 'auth_required' | 'error'> = {},
+): Catalog {
+  return {
+    getPackageStatus: vi.fn().mockImplementation((packageId: string) =>
+      statuses[packageId] ?? (packageId === 'calendar' ? 'error' : 'ready')
+    ),
+    getRefreshInFlight: vi.fn().mockReturnValue(false),
+    getPackageError: vi.fn().mockImplementation((packageId: string) =>
+      packageId === 'calendar' ? "Package 'calendar' not found in configuration" : undefined
+    ),
+    getRetryHint: vi.fn().mockReturnValue({
+      retryAt: null,
+      retryInMs: null,
+      schedule: 'none',
+    }),
+    getPackageTools: vi.fn().mockImplementation((packageId: string) =>
+      packageId === 'calendar-account-a'
+        ? [{
+            packageId,
+            tool: {
+              name: 'list_events',
+              description: 'List calendar events',
+              inputSchema: { type: 'object', properties: {} },
+            },
+            summary: 'Lists calendar events',
+            argsSkeleton: {},
+            schemaHash: 'sha256:list-events',
+          }]
+        : []
+    ),
+  } as unknown as Catalog;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +187,76 @@ describe('handleListTools — detail parameter', () => {
   beforeEach(() => {
     catalog = createMockCatalog(sampleTools);
     registry = createMockRegistry();
+  });
+
+  describe('package family resolution', () => {
+    it('lists tools from the unique configured account for a bare family id', async () => {
+      const packageCatalog = createPackageResolutionCatalog();
+      const packageRegistry = createPackageRegistry(['calendar-account-a']);
+
+      const result = await handleListTools(
+        { package_id: 'calendar', detail: 'lite' },
+        packageCatalog,
+        null,
+        packageRegistry,
+      );
+
+      expect(result.isError).toBe(false);
+      expect(JSON.parse(result.content[0].text).tools).toEqual([
+        expect.objectContaining({
+          package_id: 'calendar-account-a',
+          tool_id: 'calendar-account-a__list_events',
+        }),
+      ]);
+      expect(packageCatalog.getPackageTools).toHaveBeenCalledWith('calendar-account-a');
+    });
+
+    it('keeps two configured accounts ambiguous without consulting readiness', async () => {
+      const packageCatalog = createPackageResolutionCatalog({
+        'calendar-account-a': 'ready',
+        'calendar-account-b': 'auth_required',
+      });
+      const packageRegistry = createPackageRegistry([
+        'calendar-account-a',
+        'calendar-account-b',
+      ]);
+
+      await expect(handleListTools(
+        { package_id: 'calendar', detail: 'lite' },
+        packageCatalog,
+        null,
+        packageRegistry,
+      )).rejects.toMatchObject({
+        code: ERROR_CODES.PACKAGE_NOT_FOUND,
+        message: expect.stringMatching(/calendar-account-a.*calendar-account-b/),
+        data: {
+          package_id: 'calendar',
+          ambiguous: true,
+          candidates: [
+            expect.objectContaining({ package_id: 'calendar-account-a' }),
+            expect.objectContaining({ package_id: 'calendar-account-b' }),
+          ],
+        },
+      });
+      expect(packageCatalog.getPackageStatus).not.toHaveBeenCalled();
+    });
+
+    it('keeps an unknown family as package not found', async () => {
+      const packageCatalog = createPackageResolutionCatalog();
+      const packageRegistry = createPackageRegistry([]);
+
+      await expect(handleListTools(
+        { package_id: 'calendar', detail: 'lite' },
+        packageCatalog,
+        null,
+        packageRegistry,
+      )).rejects.toMatchObject({
+        code: ERROR_CODES.PACKAGE_NOT_FOUND,
+        message: 'Package not found: calendar',
+        data: { package_id: 'calendar' },
+      });
+      expect(packageCatalog.getPackageStatus).not.toHaveBeenCalled();
+    });
   });
 
   // -----------------------------------------------------------------------

@@ -29,6 +29,7 @@ export async function handleRestartPackage(
 
   logger.info("Handling restart_package request", { package_id });
 
+  // Deliberate: restart_package mutates one account, so its package id stays literal.
   const result = await registry.restartPackage(package_id);
 
   // Clear catalog cache so next list_tools re-fetches fresh state

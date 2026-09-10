@@ -23,12 +23,19 @@ const CALENDAR_SCHEMA = {
   additionalProperties: false,
 };
 
-function createMocks(schema: unknown = CALENDAR_SCHEMA) {
+function createMocks(
+  schema: unknown = CALENDAR_SCHEMA,
+  target: { packageId: string; toolIds: string[] } = {
+    packageId: "GoogleWorkspace-test",
+    toolIds: ["list_workspace_calendar_events", "noop"],
+  },
+) {
+  const { packageId, toolIds } = target;
   const mockClient = {
     callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] }),
   };
   const mockRegistry = {
-    getPackage: vi.fn().mockReturnValue({ id: "GoogleWorkspace-test" }),
+    getPackage: vi.fn((id: string) => (id === packageId ? { id: packageId } : undefined)),
     getClient: vi.fn().mockResolvedValue(mockClient),
     // Stage 6: useTool now dispatches via registry.callTool (lease + liveness gate);
     // delegate to the same mocked client so existing callTool assertions hold.
@@ -36,7 +43,7 @@ function createMocks(schema: unknown = CALENDAR_SCHEMA) {
     notifyActivity: vi.fn(),
   } as unknown as PackageRegistry;
   const getTool = (packageId: string, toolId: string) =>
-    packageId === "GoogleWorkspace-test" && ["list_workspace_calendar_events", "noop"].includes(toolId)
+    packageId === target.packageId && toolIds.includes(toolId)
       ? { packageId, tool: { name: toolId, inputSchema: schema }, schemaHash: "" }
       : undefined;
   const mockCatalog = {
@@ -55,7 +62,133 @@ function createMocks(schema: unknown = CALENDAR_SCHEMA) {
   return { mockRegistry, mockCatalog, validator, mockClient };
 }
 
+const toolScopedAliasCases = [
+  {
+    packageId: "Slack-test",
+    toolId: "search_slack_messages",
+    source: "max_results",
+    destination: "count",
+    value: 12,
+  },
+  {
+    packageId: "RebelSearchAndConversations",
+    toolId: "rebel_search_files",
+    source: "max_results",
+    destination: "limit",
+    value: 7,
+  },
+  {
+    packageId: "RebelSearchAndConversations",
+    toolId: "rebel_conversations_send_message",
+    source: "message",
+    destination: "text",
+    value: "Please continue",
+  },
+  {
+    packageId: "RebelSearchAndConversations",
+    toolId: "rebel_conversations_start",
+    source: "message",
+    destination: "text",
+    value: "Investigate the renewal",
+  },
+];
+
 describe("useTool — Stage 0 schema-driven auto-repair", () => {
+  it.each(toolScopedAliasCases)(
+    "repairs $toolId.$source → $destination and records the key_alias breadcrumb",
+    async ({ packageId, toolId, source, destination, value }) => {
+      const schema = {
+        type: "object",
+        properties: { [destination]: { type: typeof value } },
+        required: [destination],
+        additionalProperties: false,
+      };
+      const { mockRegistry, mockCatalog, validator, mockClient } = createMocks(schema, {
+        packageId,
+        toolIds: [toolId],
+      });
+
+      const response = await handleUseTool(
+        {
+          package_id: packageId,
+          tool_id: toolId,
+          args: { [source]: value },
+        },
+        mockRegistry,
+        mockCatalog,
+        validator,
+      );
+
+      expect(response.isError).toBe(false);
+      expect(mockClient.callTool).toHaveBeenCalledWith(toolId, { [destination]: value });
+      expect(response._meta?.superMcp?.normalisations).toEqual([
+        `key_alias:${source}→${destination}`,
+      ]);
+    },
+  );
+
+  it("preserves an explicit destination when its tool-scoped alias source is also present", async () => {
+    const schema = {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+      additionalProperties: false,
+    };
+    const packageId = "RebelSearchAndConversations";
+    const toolId = "rebel_conversations_start";
+    const { mockRegistry, mockCatalog, validator, mockClient } = createMocks(schema, {
+      packageId,
+      toolIds: [toolId],
+    });
+
+    const response = await handleUseTool(
+      {
+        package_id: packageId,
+        tool_id: toolId,
+        args: { message: "Alias value", text: "Explicit value" },
+      },
+      mockRegistry,
+      mockCatalog,
+      validator,
+    );
+
+    expect(response.isError).toBe(false);
+    expect(mockClient.callTool).toHaveBeenCalledWith(toolId, { text: "Explicit value" });
+    expect(response._meta?.superMcp?.normalisations).toEqual([
+      "key_alias_skipped:message→text:target_exists",
+    ]);
+  });
+
+  it("leaves an unrelated tool's declared message field untouched", async () => {
+    const schema = {
+      type: "object",
+      properties: { message: { type: "string" } },
+      required: ["message"],
+      additionalProperties: false,
+    };
+    const packageId = "RebelSearchAndConversations";
+    const toolId = "rebel_unrelated_message_tool";
+    const { mockRegistry, mockCatalog, validator, mockClient } = createMocks(schema, {
+      packageId,
+      toolIds: [toolId],
+    });
+
+    const response = await handleUseTool(
+      {
+        package_id: packageId,
+        tool_id: toolId,
+        args: { message: "Keep this field" },
+      },
+      mockRegistry,
+      mockCatalog,
+      validator,
+    );
+
+    expect(response.isError).toBe(false);
+    expect(mockClient.callTool).toHaveBeenCalledWith(toolId, { message: "Keep this field" });
+    expect(response._meta?.superMcp).not.toHaveProperty("normalisations");
+  });
+
   it("repairs deviceTimezone→device_timezone + max_results:'20'→20 and dispatches the repaired args", async () => {
     const { mockRegistry, mockCatalog, validator, mockClient } = createMocks();
 

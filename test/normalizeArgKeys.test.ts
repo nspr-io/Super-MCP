@@ -25,9 +25,27 @@ const ctx = (tool_id: string, package_id = "pkg") => ({
 // re-casing repairs are now done by the schema-driven `canonicalKeyNormalize`
 // auto-repair (see test/autoRepair-normalize.test.ts + test/useTool-auto-repair.test.ts).
 describe("normalizeArgKeys — alias map directions (retained entries only)", () => {
-  it("Slack search_slack_messages: limit → count (true synonym, retained)", () => {
+  it("Slack search_slack_messages: limit / max_results → count", () => {
     const aliases = getAliasesForTool("Slack-test", "search_slack_messages");
-    expect(aliases).toEqual([{ from: "limit", to: "count" }]);
+    expect(aliases).toEqual([
+      { from: "limit", to: "count" },
+      { from: "max_results", to: "count" },
+    ]);
+  });
+
+  it("RebelSearchAndConversations exposes only the observed tool-scoped synonyms", () => {
+    expect(
+      getAliasesForTool("RebelSearchAndConversations", "rebel_search_files"),
+    ).toEqual([{ from: "max_results", to: "limit" }]);
+    expect(
+      getAliasesForTool(
+        "RebelSearchAndConversations-local",
+        "rebel_conversations_send_message",
+      ),
+    ).toEqual([{ from: "message", to: "text" }]);
+    expect(
+      getAliasesForTool("RebelSearchAndConversations", "rebel_conversations_start"),
+    ).toEqual([{ from: "message", to: "text" }]);
   });
 
   it("HubSpot create_hubspot_note: body / note_body → properties.hs_note_body (nested rename, retained)", () => {
@@ -44,10 +62,10 @@ describe("normalizeArgKeys — alias map directions (retained entries only)", ()
 
   it("Google Workspace package family now has NO alias entries (casing → auto-repair)", () => {
     expect(
-      getAliasesForTool("GoogleWorkspace-alexs-mindstone-com", "list_workspace_calendar_events"),
+      getAliasesForTool("GoogleWorkspace-test", "list_workspace_calendar_events"),
     ).toEqual([]);
     expect(
-      getAliasesForTool("GoogleWorkspace-alexs-mindstone-com", "create_workspace_draft"),
+      getAliasesForTool("GoogleWorkspace-test", "create_workspace_draft"),
     ).toEqual([]);
   });
 
@@ -107,6 +125,26 @@ describe("normalizeArgKeys — top-level replacement semantics", () => {
     expect(breadcrumbs).toEqual([]);
   });
 
+  it("leaves a declared source key alone on a tool where that key is canonical", () => {
+    const args = { limit: 25 };
+    const { args: out, breadcrumbs } = normalizeArgKeys(
+      args,
+      ctx("get_slack_channel_history", "Slack-test"),
+    );
+    expect(out).toEqual({ limit: 25 });
+    expect(breadcrumbs).toEqual([]);
+  });
+
+  it("does not apply message → text to an unrelated tool with a message field", () => {
+    const args = { message: "Keep this field" };
+    const { args: out, breadcrumbs } = normalizeArgKeys(
+      args,
+      ctx("rebel_conversations_search", "RebelSearchAndConversations"),
+    );
+    expect(out).toEqual({ message: "Keep this field" });
+    expect(breadcrumbs).toEqual([]);
+  });
+
   it("passes through non-object args unchanged", () => {
     const { args: out, breadcrumbs } = normalizeArgKeys(
       "not-an-object",
@@ -160,6 +198,21 @@ describe("normalizeArgKeys — target-wins collision", () => {
     );
     expect(out).toEqual({ count: 25, channel: "C1" });
     expect(breadcrumbs).toEqual([{ kind: "applied", from: "limit", to: "count" }]);
+  });
+
+  it("never clobbers an explicit destination for a newly observed synonym", () => {
+    const args = { message: "Alias value", text: "Explicit value" };
+    const { args: out, breadcrumbs } = normalizeArgKeys(
+      args,
+      ctx("rebel_conversations_start", "RebelSearchAndConversations"),
+    );
+    expect(out).toEqual({ text: "Explicit value" });
+    expect(breadcrumbs).toEqual([
+      { kind: "skipped", from: "message", to: "text", reason: "target_exists" },
+    ]);
+    expect(formatKeyAliasBreadcrumb(breadcrumbs[0])).toBe(
+      "key_alias_skipped:message→text:target_exists",
+    );
   });
 });
 

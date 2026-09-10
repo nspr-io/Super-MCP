@@ -33,6 +33,10 @@ import {
 } from "./materializeOutput.js";
 import { parseUseToolInput } from "./useToolInput.js";
 import { resolveToolTarget } from "../toolTargetResolution.js";
+import {
+  formatAmbiguousPackageMessage,
+  resolvePackageId,
+} from "../utils/packageResolution.js";
 
 const logger = getLogger();
 
@@ -1389,7 +1393,7 @@ export async function handleUseTool(
   // does not enforce package_id for the same reason.)
   package_id = requirePackageId(package_id, { handler: "use_tool" });
 
-  // R2 — bare package-alias resolver. When the agent passes the base server
+  // R2 — shared package-alias resolver. When the agent passes the base server
   // name (e.g. "GoogleWorkspace") instead of a multi-instance package id
   // (e.g. "GoogleWorkspace-greg-work-com"), recover by querying the registry
   // for every package whose id starts with `${alias}-`. Unique match wins
@@ -1398,27 +1402,24 @@ export async function handleUseTool(
   //
   // Evidence: 66 `Package not found: GoogleWorkspace` errors in the corpus.
   let packageResolution: { from: string; to: string } | undefined;
-  if (package_id && !registry.getPackage(package_id)) {
-    const matches = registry.findPackagesByAlias(package_id);
-    if (matches.length === 1) {
-      const resolved = matches[0];
-      packageResolution = { from: package_id, to: resolved.id };
-      logger.debug("Resolved bare package alias to single instance", {
-        original_package_id: package_id,
-        resolved_package_id: resolved.id,
-      });
-      package_id = resolved.id;
-    } else if (matches.length > 1) {
-      throw {
-        code: ERROR_CODES.PACKAGE_NOT_FOUND,
-        message: `Package alias '${package_id}' matches ${matches.length} active accounts. Specify the full package_id (e.g. ${matches.map(m => `'${m.id}'`).join(", ")}).`,
-        data: {
-          package_id,
-          ambiguous: true,
-          candidates: matches.map(m => ({ package_id: m.id, name: m.name })),
-        },
-      };
-    }
+  const packageIdResolution = resolvePackageId(registry, package_id);
+  if (packageIdResolution.outcome === "unique_family") {
+    packageResolution = { from: package_id, to: packageIdResolution.packageId };
+    package_id = packageIdResolution.packageId;
+  } else if (packageIdResolution.outcome === "ambiguous") {
+    const candidateIds = packageIdResolution.candidateIds;
+    throw {
+      code: ERROR_CODES.PACKAGE_NOT_FOUND,
+      message: formatAmbiguousPackageMessage(package_id, candidateIds),
+      data: {
+        package_id,
+        ambiguous: true,
+        candidates: candidateIds.map((candidateId) => {
+          const candidate = registry.getPackage(candidateId);
+          return { package_id: candidateId, name: candidate?.name ?? candidateId };
+        }),
+      },
+    };
   }
 
   // Check if tool is blocked by security policy

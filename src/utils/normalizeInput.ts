@@ -18,32 +18,119 @@ import {
 
 const logger = getLogger();
 
+export type ArgsContainerShape =
+  | "array"
+  | "number"
+  | "boolean"
+  | "empty_string"
+  | "json_array_string"
+  | "fenced_json_object"
+  | "double_encoded_json_object"
+  | "other_string"
+  | "other"
+  | "missing";
+
+type RepairedArgsContainerShape =
+  | "fenced_json_object"
+  | "double_encoded_json_object";
+
+// Carry a repair breadcrumb by object identity until `normalizeArgKeys`, the existing
+// response-normalisation chokepoint. A WeakMap keeps the marker out of downstream args.
+const repairedArgsContainerShapes = new WeakMap<object, RepairedArgsContainerShape>();
+
+function unwrapWholeValueJsonFence(value: string): string | null {
+  const match = value.trim().match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/);
+  return match?.[1] ?? null;
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function parseBoundedObjectContainer(value: string): {
+  value: Record<string, unknown>;
+  repairedShape?: RepairedArgsContainerShape;
+} | null {
+  const fencedValue = unwrapWholeValueJsonFence(value);
+  if (fencedValue !== null) {
+    const parsedFence = parseJson(fencedValue);
+    return isPlainObject(parsedFence)
+      ? { value: parsedFence, repairedShape: "fenced_json_object" }
+      : null;
+  }
+
+  const firstParse = parseJson(value);
+  if (isPlainObject(firstParse)) return { value: firstParse };
+  if (typeof firstParse !== "string") return null;
+
+  const secondParse = parseJson(firstParse);
+  return isPlainObject(secondParse)
+    ? { value: secondParse, repairedShape: "double_encoded_json_object" }
+    : null;
+}
+
+/** Closed, low-cardinality classifier for the `use_tool.args` container boundary. */
+export function classifyArgsContainerShape(value: unknown): ArgsContainerShape {
+  if (value === undefined || value === null) return "missing";
+  if (Array.isArray(value)) return "array";
+  if (typeof value === "number") return "number";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value !== "string") return "other";
+  if (value.trim() === "") return "empty_string";
+
+  const boundedObject = parseBoundedObjectContainer(value);
+  if (boundedObject?.repairedShape) return boundedObject.repairedShape;
+
+  const firstParse = parseJson(value);
+  if (Array.isArray(firstParse)) return "json_array_string";
+  return "other_string";
+}
+
 /**
  * If `value` is a JSON string whose parsed result matches `expectedType`,
  * return the parsed value. Otherwise return the original value unchanged.
+ * `boundedObjectContainerRepair` additionally accepts only the two proven
+ * `use_tool.args` wrapper shapes; other callers retain the one-decode contract.
  *
  * Logs every successful coercion at warn level for upstream-bug visibility.
  */
 export function coerceStringifiedJson<T>(
   value: unknown,
   expectedType: "object" | "array",
-  context: { handler: string; field: string; package_id?: string; tool_id?: string },
+  context: {
+    handler: string;
+    field: string;
+    package_id?: string;
+    tool_id?: string;
+    boundedObjectContainerRepair?: boolean;
+  },
 ): T | unknown {
   if (typeof value !== "string") return value;
 
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return value;
+  let repairedShape: RepairedArgsContainerShape | undefined;
+  if (expectedType === "object" && context.boundedObjectContainerRepair) {
+    const boundedObject = parseBoundedObjectContainer(value);
+    if (!boundedObject) return value;
+    parsed = boundedObject.value;
+    repairedShape = boundedObject.repairedShape;
+  } else {
+    parsed = parseJson(value);
+    if (parsed === undefined) return value;
   }
 
   if (expectedType === "object" && typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+    if (repairedShape) repairedArgsContainerShapes.set(parsed, repairedShape);
     logger.warn("Coerced stringified JSON to object (upstream model bug)", {
       handler: context.handler,
       field: context.field,
       package_id: context.package_id,
       tool_id: context.tool_id,
+      ...(repairedShape ? { args_shape: repairedShape } : {}),
     });
     return parsed as T;
   }
@@ -178,7 +265,8 @@ export function requirePackageId(
  */
 export type KeyAliasBreadcrumb =
   | { kind: "applied"; from: string; to: string }
-  | { kind: "skipped"; from: string; to: string; reason: "target_exists" };
+  | { kind: "skipped"; from: string; to: string; reason: "target_exists" }
+  | { kind: "args_container"; shape: RepairedArgsContainerShape };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -242,12 +330,17 @@ export function normalizeArgKeys(
   context: { handler: string; package_id: string; tool_id: string },
   aliases?: ReadonlyArray<AliasEntry>,
 ): { args: unknown; breadcrumbs: KeyAliasBreadcrumb[] } {
-  const resolved = aliases ?? getAliasesForTool(context.package_id, context.tool_id);
-  if (resolved.length === 0 || !isPlainObject(args)) {
-    return { args, breadcrumbs: [] };
-  }
+  if (!isPlainObject(args)) return { args, breadcrumbs: [] };
 
-  const breadcrumbs: KeyAliasBreadcrumb[] = [];
+  const repairedShape = repairedArgsContainerShapes.get(args);
+  if (repairedShape) repairedArgsContainerShapes.delete(args);
+  const breadcrumbs: KeyAliasBreadcrumb[] = repairedShape
+    ? [{ kind: "args_container", shape: repairedShape }]
+    : [];
+
+  const resolved = aliases ?? getAliasesForTool(context.package_id, context.tool_id);
+  if (resolved.length === 0) return { args, breadcrumbs };
+
   for (const { from, to } of resolved) {
     if (RESERVED_TOP_LEVEL_KEYS.has(from) || RESERVED_TOP_LEVEL_KEYS.has(to.split(".")[0]!)) {
       continue;
@@ -290,6 +383,7 @@ export function normalizeArgKeys(
 
 /** Format a key-alias breadcrumb into the `_meta.superMcp.normalisations` shape. */
 export function formatKeyAliasBreadcrumb(entry: KeyAliasBreadcrumb): string {
+  if (entry.kind === "args_container") return `args_container:${entry.shape}`;
   if (entry.kind === "applied") return `key_alias:${entry.from}→${entry.to}`;
   return `key_alias_skipped:${entry.from}→${entry.to}:${entry.reason}`;
 }
