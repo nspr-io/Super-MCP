@@ -6,7 +6,11 @@ import {
   type UseToolInput,
   type UseToolMetaParam,
 } from "../types.js";
-import { coerceStringifiedJson } from "../utils/normalizeInput.js";
+import {
+  classifyArgsContainerShape,
+  coerceStringifiedJson,
+  type ArgsContainerShape,
+} from "../utils/normalizeInput.js";
 
 type UseToolHandlerInput = UseToolInput & {
   _rebel_staged?: boolean;
@@ -75,6 +79,7 @@ function throwDispatchArgValidation(
     field: string;
     expected: string;
     got: string;
+    args_shape?: ArgsContainerShape;
     package_id?: unknown;
     tool_id?: unknown;
     provided_args?: string[];
@@ -90,6 +95,7 @@ function throwDispatchArgValidation(
       field: data.field,
       expected: data.expected,
       got: data.got,
+      ...(data.args_shape ? { args_shape: data.args_shape } : {}),
       package_id: data.package_id ?? null,
       tool_id: data.tool_id ?? null,
       provided_args: data.provided_args ?? [],
@@ -114,6 +120,7 @@ function parseArgsContainer(input: {
     field: "args",
     package_id: optionalString(package_id),
     tool_id: optionalString(tool_id),
+    boundedObjectContainerRepair: true,
   });
 
   if (isArgsObject(coerced)) {
@@ -126,6 +133,7 @@ function parseArgsContainer(input: {
       field: "args",
       expected: "object|null|undefined|stringified JSON object",
       got: getValueKind(input.args),
+      args_shape: classifyArgsContainerShape(input.args),
       package_id,
       tool_id,
       provided_args: getProvidedArgs(input.args),

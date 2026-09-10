@@ -88,6 +88,18 @@ async function expectDispatchArgValidation(promise: Promise<unknown>) {
   });
 }
 
+async function catchDispatchArgValidation(promise: Promise<unknown>) {
+  let caught: unknown;
+  try {
+    await promise;
+  } catch (error) {
+    caught = error;
+  }
+
+  expect(caught).toMatchObject({ code: ERROR_CODES.ARG_VALIDATION_FAILED });
+  return caught as { data: { args_shape?: string } };
+}
+
 describe("useTool dispatch-level validation", () => {
   it("rejects a non-object use_tool input with coded recovery guidance", async () => {
     const { mockRegistry, mockCatalog, mockValidator } = createMocks();
@@ -228,6 +240,85 @@ describe("useTool dispatch-level validation", () => {
       expect.objectContaining({ package_id: "pkg1", tool_id: "tool1" }),
     );
     expect(mockClient.callTool).toHaveBeenCalledWith("tool1", { query: "budget" });
+  });
+
+  it.each([
+    {
+      label: "an unlabelled whole-value fence",
+      args: "```\n{\"query\":\"budget\"}\n```",
+      shape: "fenced_json_object",
+    },
+    {
+      label: "a json-labelled whole-value fence",
+      args: "```json\n{\"query\":\"budget\"}\n```",
+      shape: "fenced_json_object",
+    },
+    {
+      label: "a double-encoded JSON object",
+      args: '"{\\"query\\":\\"budget\\"}"',
+      shape: "double_encoded_json_object",
+    },
+  ])("repairs $label and records its args-container shape", async ({ args, shape }) => {
+    const { mockRegistry, mockCatalog, mockValidator, mockClient } = createMocks();
+
+    const response = await handleUseTool(
+      {
+        package_id: "pkg1",
+        tool_id: "tool1",
+        args,
+      } as unknown as Parameters<typeof handleUseTool>[0],
+      mockRegistry,
+      mockCatalog,
+      mockValidator,
+    );
+
+    expect(response.isError).toBe(false);
+    expect(mockClient.callTool).toHaveBeenCalledWith("tool1", { query: "budget" });
+    expect(response._meta?.superMcp?.normalisations).toEqual([`args_container:${shape}`]);
+  });
+
+  it.each([
+    { label: "array", args: ["budget"], shape: "array" },
+    { label: "number", args: 42, shape: "number" },
+    { label: "boolean", args: false, shape: "boolean" },
+    { label: "empty string", args: "", shape: "empty_string" },
+    { label: "JSON-array string", args: '["budget"]', shape: "json_array_string" },
+    {
+      label: "comment-suffixed JSON object",
+      args: '{"query":"budget"} // use this object',
+      shape: "other_string",
+    },
+    {
+      label: "triple-encoded JSON object",
+      args: JSON.stringify(JSON.stringify(JSON.stringify({ query: "budget" }))),
+      shape: "other_string",
+    },
+    {
+      label: "fenced double-encoded JSON object",
+      args: `\`\`\`json\n${JSON.stringify(JSON.stringify({ query: "budget" }))}\n\`\`\``,
+      shape: "other_string",
+    },
+    { label: "non-JSON runtime value", args: () => undefined, shape: "other" },
+  ])("rejects a $label with a closed args_shape before downstream dispatch", async ({ args, shape }) => {
+    const { mockRegistry, mockCatalog, mockValidator, mockClient } = createMocks();
+
+    const error = await catchDispatchArgValidation(
+      handleUseTool(
+        {
+          package_id: "pkg1",
+          tool_id: "tool1",
+          args,
+        } as unknown as Parameters<typeof handleUseTool>[0],
+        mockRegistry,
+        mockCatalog,
+        mockValidator,
+      ),
+    );
+
+    expect(error.data.args_shape).toBe(shape);
+    expect(mockRegistry.getPackage).not.toHaveBeenCalled();
+    expect(mockValidator.validate).not.toHaveBeenCalled();
+    expect(mockClient.callTool).not.toHaveBeenCalled();
   });
 
   it("staged calls short-circuit BEFORE dispatch validation even with a malformed args container", async () => {

@@ -18,7 +18,8 @@
  *
  * What CANNOT be derived from the schema shape, and so REMAINS here:
  *   • True synonyms — a different word, not a re-casing. Slack
- *     `search_slack_messages` is canonical on `count`; agents say `limit`.
+ *     `search_slack_messages` is canonical on `count`; agents say `limit` or
+ *     `max_results`. RebelSearchAndConversations has its own observed pairs.
  *     `canonical("limit") !== canonical("count")`, so the normalizer would
  *     never connect them. (Verified: `get_slack_channel_history` is canonical
  *     on `limit` and has NO `count` — which is exactly why this synonym must
@@ -29,8 +30,11 @@
  *     a nested path, so these stay.
  *
  * Direction was verified against current connector schemas:
- *   • Slack message tools accept `count` — agents often try `limit` instead
+ *   • Slack message tools accept `count` — agents often try `limit` or
+ *     `max_results` instead
  *     (resources/mcp/slack/src/definitions.ts).
+ *   • RebelSearchAndConversations file search accepts `limit`, while its
+ *     conversation-send tools accept `text`.
  *   • HubSpot create_hubspot_note accepts the body as a nested
  *     `properties.hs_note_body` string. Stage C added a connector-side mirror
  *     for `body` / `note_body`; the R3 entry is the router-side belt-and-
@@ -68,7 +72,11 @@ export type ToolAliasMap = ReadonlyArray<AliasEntry>;
 const SLACK_TOOL_ALIASES: Readonly<Record<string, ToolAliasMap>> = {
   // `search_slack_messages` is canonical on `count` (connectors/slack messages.ts),
   // so an agent's `limit` must be aliased to `count`.
-  search_slack_messages: [{ from: "limit", to: "count" }],
+  search_slack_messages: [
+    { from: "limit", to: "count" },
+    // Observed rejection: "Unknown fields: max_results. Valid arguments: query, count, …"; schema: mcp-servers/connectors/slack/src/tools/messages.ts:304-312.
+    { from: "max_results", to: "count" },
+  ],
   // NOTE: `get_slack_channel_history` is canonical on `limit`
   // (connectors/slack channels.ts) — it has NO `count` field. A `limit→count`
   // alias here rewrote a correct `limit` into an invalid `count`, which the
@@ -88,15 +96,23 @@ const HUBSPOT_TOOL_ALIASES: Readonly<Record<string, ToolAliasMap>> = {
   ],
 };
 
+const REBEL_SEARCH_AND_CONVERSATIONS_TOOL_ALIASES: Readonly<Record<string, ToolAliasMap>> = {
+  // Observed rejection: "Unknown fields: max_results. Valid arguments: query, limit, …"; schema: resources/mcp/rebel-search-and-conversations/server.cjs:118-124.
+  rebel_search_files: [{ from: "max_results", to: "limit" }],
+  // Observed rejection: "Unknown fields: message. Valid arguments: sessionId, url, text, …"; schema: resources/mcp/rebel-search-and-conversations/server.cjs:179-185.
+  rebel_conversations_send_message: [{ from: "message", to: "text" }],
+  // Observed rejection: "Unknown fields: message. Valid arguments: text, sendMessage, …"; schema: resources/mcp/rebel-search-and-conversations/server.cjs:173-177.
+  rebel_conversations_start: [{ from: "message", to: "text" }],
+};
+
 // NOTE (Stage 0, 2026-06-16): the Microsoft Graph and Google Workspace alias
 // maps were REMOVED. Every entry they held was a pure camelCase↔snake_case
 // re-casing (e.g. `startDateTime`↔`start_datetime`, `maxResults`↔`max_results`,
 // `eventId`↔`event_id`) which `canonicalKeyNormalize` now reproduces by mapping
 // each unknown key to the unique schema property sharing its canonical form.
 // The REBEL-13Y casing failures these maps targeted are covered there, without
-// the per-tool drift risk. True synonyms / nested renames (Slack `limit→count`,
-// HubSpot `body→properties.hs_note_body`) remain above because no schema-shape
-// match can derive them.
+// the per-tool drift risk. Tool-scoped true synonyms and HubSpot's nested rename
+// remain above because no schema-shape match can derive them.
 
 function isPackageFamily(packageId: string, family: string): boolean {
   const normalizedPackageId = packageId.trim().toLowerCase();
@@ -110,8 +126,8 @@ function isPackageFamily(packageId: string, family: string): boolean {
 /**
  * Returns the alias entries for a tool. Empty array when nothing is registered.
  *
- * After the Stage 0 split only true synonyms (Slack) and nested-target renames
- * (HubSpot) remain — the casing-only Microsoft/Google maps are handled by the
+ * After the Stage 0 split only tool-scoped true synonyms and nested-target
+ * renames remain — the casing-only Microsoft/Google maps are handled by the
  * schema-driven `canonicalKeyNormalize` auto-repair, not here.
  */
 export function getAliasesForTool(
@@ -120,6 +136,9 @@ export function getAliasesForTool(
 ): ToolAliasMap {
   if (isPackageFamily(packageId, "Slack")) return SLACK_TOOL_ALIASES[toolId] ?? [];
   if (isPackageFamily(packageId, "HubSpot")) return HUBSPOT_TOOL_ALIASES[toolId] ?? [];
+  if (isPackageFamily(packageId, "RebelSearchAndConversations")) {
+    return REBEL_SEARCH_AND_CONVERSATIONS_TOOL_ALIASES[toolId] ?? [];
+  }
   return [];
 }
 
