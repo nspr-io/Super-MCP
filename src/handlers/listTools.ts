@@ -2,9 +2,13 @@ import { ListToolsInput, ListToolsOutput, ERROR_CODES, ToolInfo } from "../types
 import type {
   CatalogRefreshScheduler,
   CatalogView,
-  PackageMetadataView,
 } from "../catalog.js";
 import { buildToolInfos, getDiscoveryPackageState } from "../catalogFormatters.js";
+import {
+  formatAmbiguousPackageMessage,
+  resolvePackageId,
+  type PackageResolutionRegistry,
+} from "../utils/packageResolution.js";
 import { computeSecurityAnnotation, extractRawToolId } from "./annotateToolSecurity.js";
 import {
   coerceStringifiedNumber,
@@ -15,7 +19,7 @@ export async function handleListTools(
   input: ListToolsInput,
   catalog: CatalogView,
   _validator: any,
-  packagesView?: PackageMetadataView,
+  registry: PackageResolutionRegistry,
   refreshScheduler?: CatalogRefreshScheduler,
 ): Promise<any> {
   let {
@@ -35,6 +39,33 @@ export async function handleListTools(
   // message (and its list_tool_packages guidance) identical across handlers.
   // Residue-chunk9 item 3, origin 260811_degenerate-output-handling#R4.
   package_id = requirePackageId(package_id, { handler: "list_tools" });
+
+  const packageResolution = resolvePackageId(registry, package_id);
+  if (packageResolution.outcome === "ambiguous") {
+    throw {
+      code: ERROR_CODES.PACKAGE_NOT_FOUND,
+      message: formatAmbiguousPackageMessage(
+        package_id,
+        packageResolution.candidateIds,
+      ),
+      data: {
+        package_id,
+        ambiguous: true,
+        candidates: packageResolution.candidateIds.map((candidateId) => ({
+          package_id: candidateId,
+          name: registry.getPackage(candidateId)?.name ?? candidateId,
+        })),
+      },
+    };
+  }
+  if (packageResolution.outcome === "not_found") {
+    throw {
+      code: ERROR_CODES.PACKAGE_NOT_FOUND,
+      message: `Package not found: ${package_id}`,
+      data: { package_id },
+    };
+  }
+  package_id = packageResolution.packageId;
 
   if (detail !== "lite" && detail !== "full") {
     throw {
@@ -92,7 +123,7 @@ export async function handleListTools(
   });
 
   // Annotate tools with security blocked status
-  const catalogId = packagesView?.getPackage(package_id)?.catalogId;
+  const catalogId = registry.getPackage(package_id)?.catalogId;
   const tools: ToolInfo[] = toolInfos.map(tool => ({
     ...tool,
     ...computeSecurityAnnotation(package_id, catalogId, extractRawToolId(tool.tool_id)),

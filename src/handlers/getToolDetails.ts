@@ -6,6 +6,10 @@ import type {
 import { getDiscoveryPackageState } from "../catalogFormatters.js";
 import type { PackageRegistry } from "../registry.js";
 import { resolveToolTarget } from "../toolTargetResolution.js";
+import {
+  formatAmbiguousPackageMessage,
+  resolvePackageId,
+} from "../utils/packageResolution.js";
 import { computeSecurityAnnotation } from "./annotateToolSecurity.js";
 import { getLogger } from "../logging.js";
 import {
@@ -74,7 +78,24 @@ export async function handleGetToolDetails(
   const schemaStaleNotes = new Map<string, LiveToolNote>();
 
   // Group by package_id for efficiency
-  const byPackage = new Map<string, Array<{ toolId: string; rawName: string }>>();
+  const byPackage = new Map<string, Array<{
+    toolId: string;
+    responseToolId: string;
+    rawName: string;
+  }>>();
+  const packageResolutionFailures: Array<
+    | {
+        outcome: "ambiguous";
+        toolId: string;
+        packageId: string;
+        candidateIds: string[];
+      }
+    | {
+        outcome: "not_found";
+        toolId: string;
+        packageId: string;
+      }
+  > = [];
   // Tool IDs whose package prefix is missing/"undefined" (e.g. "undefined__tool",
   // "__tool") — the model stringified an absent package_id into the tool_id.
   // Reported per-entry below instead of grouping, so one bad ID can't fail the
@@ -87,16 +108,39 @@ export async function handleGetToolDetails(
       // Will be handled as not_found below
       continue;
     }
-    const packageId = toolId.slice(0, sepIndex);
+    const requestedPackageId = toolId.slice(0, sepIndex);
     const rawName = toolId.slice(sepIndex + 2);
-    if (isMissingPackageId(packageId)) {
+    if (isMissingPackageId(requestedPackageId)) {
       missingPackagePrefixIds.push(toolId);
       continue;
     }
+    const packageResolution = resolvePackageId(registry, requestedPackageId);
+    if (packageResolution.outcome === "ambiguous") {
+      packageResolutionFailures.push({
+        outcome: "ambiguous",
+        toolId,
+        packageId: requestedPackageId,
+        candidateIds: packageResolution.candidateIds,
+      });
+      continue;
+    }
+    if (packageResolution.outcome === "not_found") {
+      packageResolutionFailures.push({
+        outcome: "not_found",
+        toolId,
+        packageId: requestedPackageId,
+      });
+      continue;
+    }
+    const packageId = packageResolution.packageId;
     if (!byPackage.has(packageId)) {
       byPackage.set(packageId, []);
     }
-    byPackage.get(packageId)!.push({ toolId, rawName });
+    byPackage.get(packageId)!.push({
+      toolId,
+      responseToolId: `${packageId}__${rawName}`,
+      rawName,
+    });
   }
 
   // Resolve each tool into a map (keyed by tool_id) for input-order output
@@ -107,6 +151,7 @@ export async function handleGetToolDetails(
     reason?: string;
     retry_in_ms?: number | null;
     next_retry_at?: number | null;
+    candidates?: string[];
     notes?: {
       notice: string;
       text: string;
@@ -124,6 +169,32 @@ export async function handleGetToolDetails(
       description:
         `Invalid tool ID '${toolId}': its package prefix is empty or undefined. ` +
         `${PACKAGE_DISCOVERY_HINT} Then use IDs of the form 'package__tool_name' from list_tools(package_id: "...").`,
+    });
+  }
+
+  for (const failure of packageResolutionFailures) {
+    if (failure.outcome === "ambiguous") {
+      resultMap.set(failure.toolId, {
+        package_id: failure.packageId,
+        tool_id: failure.toolId,
+        name: failure.toolId,
+        schema_hash: "",
+        error: "package_ambiguous",
+        candidates: failure.candidateIds,
+        description: formatAmbiguousPackageMessage(
+          failure.packageId,
+          failure.candidateIds,
+        ),
+      });
+      continue;
+    }
+    resultMap.set(failure.toolId, {
+      package_id: failure.packageId,
+      tool_id: failure.toolId,
+      name: failure.toolId,
+      schema_hash: "",
+      not_found: true,
+      description: `Package not found: ${failure.packageId}. ${PACKAGE_DISCOVERY_HINT}`,
     });
   }
 
@@ -151,8 +222,8 @@ export async function handleGetToolDetails(
                 : `Package '${packageId}' is unavailable: ${setupReason || 'unknown error'}`;
           resultMap.set(req.toolId, {
             package_id: packageId,
-            tool_id: req.toolId,
-            name: req.toolId,
+            tool_id: req.responseToolId,
+            name: req.responseToolId,
             schema_hash: "",
             error: packageStatus === "setup_incomplete" ? "setup_incomplete" : "package_unavailable",
             description,
@@ -167,8 +238,8 @@ export async function handleGetToolDetails(
         if (targetResolution.outcome === "absent") {
           resultMap.set(req.toolId, {
             package_id: packageId,
-            tool_id: req.toolId,
-            name: req.toolId,
+            tool_id: req.responseToolId,
+            name: req.responseToolId,
             schema_hash: "",
             not_found: true,
           });
@@ -192,8 +263,8 @@ export async function handleGetToolDetails(
 
         const toolInfo: ResultEntry = {
           package_id: packageId,
-          tool_id: req.toolId,
-          name: req.toolId,
+          tool_id: req.responseToolId,
+          name: req.responseToolId,
           description: cachedTool.tool.description,
           summary: cachedTool.summary,
           ...(matchingNote
@@ -219,8 +290,8 @@ export async function handleGetToolDetails(
         if (!resultMap.has(req.toolId)) {
           resultMap.set(req.toolId, {
             package_id: packageId,
-            tool_id: req.toolId,
-            name: req.toolId,
+            tool_id: req.responseToolId,
+            name: req.responseToolId,
             schema_hash: "",
             error: "package_unavailable",
             description: `Failed to load package '${packageId}'.`,

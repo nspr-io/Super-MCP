@@ -85,6 +85,8 @@ vi.mock("../index.js", async (importOriginal) => {
 import { handleRecordToolNote } from "../recordToolNote.js";
 import { createToolNotesStore, makeToolNoteKey } from "../../toolNotes.js";
 import type { Catalog } from "../../catalog.js";
+import type { PackageResolutionRegistry } from "../../utils/packageResolution.js";
+import { PACKAGE_DISCOVERY_HINT } from "../../utils/normalizeInput.js";
 import { ERROR_CODES } from "../../types.js";
 
 function createMockCatalog(
@@ -116,6 +118,27 @@ function createMockCatalog(
   } as unknown as Catalog;
 }
 
+function createMockRegistry(packageIds: string[]): PackageResolutionRegistry {
+  const packages = packageIds.map((id) => ({
+    id,
+    name: id,
+    transport: "stdio" as const,
+    visibility: "default" as const,
+  }));
+  return {
+    getPackage: vi.fn().mockImplementation((packageId: string) =>
+      packages.find((pkg) => pkg.id === packageId)
+    ),
+    findPackagesByAlias: vi.fn().mockImplementation((alias: string) => {
+      const aliasLower = alias.toLowerCase();
+      const exact = packages.find((pkg) => pkg.id.toLowerCase() === aliasLower);
+      if (exact) return [exact];
+      const prefix = `${aliasLower}-`;
+      return packages.filter((pkg) => pkg.id.toLowerCase().startsWith(prefix));
+    }),
+  };
+}
+
 function parseResponse(result: {
   content: Array<{ text: string }>;
   isError: boolean;
@@ -128,6 +151,7 @@ describe("handleRecordToolNote", () => {
   let notesFile: string;
   let store: ReturnType<typeof createToolNotesStore>;
   let catalog: Catalog;
+  let registry: PackageResolutionRegistry;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(
@@ -144,6 +168,7 @@ describe("handleRecordToolNote", () => {
         read_file: { schemaHash: "hash-read-file" },
       },
     });
+    registry = createMockRegistry(["filesystem"]);
     vi.clearAllMocks();
   });
 
@@ -168,6 +193,7 @@ describe("handleRecordToolNote", () => {
         note: "Paths must be absolute.",
       },
       catalog,
+      registry,
       store,
     );
     expect(parseResponse(recorded)).toEqual({ status: "recorded" });
@@ -184,6 +210,7 @@ describe("handleRecordToolNote", () => {
         note: "Use absolute paths only.",
       },
       catalog,
+      registry,
       store,
     );
     expect(parseResponse(replaced)).toEqual({ status: "recorded" });
@@ -198,10 +225,93 @@ describe("handleRecordToolNote", () => {
         remove: true,
       },
       catalog,
+      registry,
       store,
     );
     expect(parseResponse(removed)).toEqual({ status: "removed" });
     expect(await storedNote("filesystem", "read_file")).toBeUndefined();
+  });
+
+  it("stores a unique package-family match against its canonical package id", async () => {
+    const familyCatalog = createMockCatalog({
+      "calendar-account-a": {
+        list_events: { schemaHash: "hash-list-events" },
+      },
+    });
+    const familyRegistry = createMockRegistry(["calendar-account-a"]);
+
+    const result = await handleRecordToolNote(
+      {
+        package_id: "calendar",
+        tool_id: "list_events",
+        note: "Prefer a narrow date range.",
+      },
+      familyCatalog,
+      familyRegistry,
+      store,
+    );
+
+    expect(parseResponse(result)).toEqual({ status: "recorded" });
+    expect(result.isError).toBe(false);
+    expect(await storedNote("calendar-account-a", "list_events")).toBe(
+      "Prefer a narrow date range.",
+    );
+    expect(await storedNote("calendar", "list_events")).toBeUndefined();
+    expect(familyCatalog.getTool).toHaveBeenCalledWith(
+      "calendar-account-a",
+      "list_events",
+    );
+  });
+
+  it("rejects an ambiguous package family and names each candidate", async () => {
+    const familyCatalog = createMockCatalog({});
+    const familyRegistry = createMockRegistry([
+      "calendar-account-a",
+      "calendar-account-b",
+    ]);
+
+    const result = await handleRecordToolNote(
+      {
+        package_id: "calendar",
+        tool_id: "list_events",
+        note: "Prefer a narrow date range.",
+      },
+      familyCatalog,
+      familyRegistry,
+      store,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(parseResponse(result)).toMatchObject({
+      status: "ambiguous",
+      candidates: ["calendar-account-a", "calendar-account-b"],
+      message: expect.stringContaining("calendar-account-a"),
+    });
+    expect(parseResponse(result).message).toContain("calendar-account-b");
+    expect(familyCatalog.getTool).not.toHaveBeenCalled();
+  });
+
+  it("returns package discovery advice for an unknown package family", async () => {
+    const familyCatalog = createMockCatalog({});
+    const familyRegistry = createMockRegistry([]);
+
+    const result = await handleRecordToolNote(
+      {
+        package_id: "calendar",
+        tool_id: "list_events",
+        note: "Prefer a narrow date range.",
+      },
+      familyCatalog,
+      familyRegistry,
+      store,
+    );
+
+    expect(result.isError).toBe(true);
+    expect(parseResponse(result)).toMatchObject({
+      status: "not_found",
+      message: expect.stringContaining(PACKAGE_DISCOVERY_HINT),
+    });
+    expect(familyCatalog.getTool).not.toHaveBeenCalled();
   });
 
   it("rejects combined discovery tool_id values with an actionable invalid-params error", async () => {
@@ -213,6 +323,7 @@ describe("handleRecordToolNote", () => {
           note: "bad id form",
         },
         catalog,
+        registry,
         store,
       ),
     ).rejects.toMatchObject({
@@ -240,6 +351,7 @@ describe("handleRecordToolNote", () => {
           note: "This note could never surface.",
         },
         delimiterCatalog,
+        registry,
         store,
       ),
     ).rejects.toMatchObject({
@@ -264,6 +376,7 @@ describe("handleRecordToolNote", () => {
         note: "Use the narrowest available event filter.",
       },
       embeddedDelimiterCatalog,
+      registry,
       store,
     );
 
@@ -286,6 +399,7 @@ describe("handleRecordToolNote", () => {
         note: "won't stick",
       },
       catalog,
+      registry,
       store,
     );
     expect(parseResponse(result)).toEqual({ status: "not_found" });
@@ -339,7 +453,7 @@ describe("handleRecordToolNote", () => {
     ],
   ])("returns invalid params for %s", async (_label, input, message) => {
     await expect(
-      handleRecordToolNote(input as any, catalog, store),
+      handleRecordToolNote(input as any, catalog, registry, store),
     ).rejects.toMatchObject({
       code: ERROR_CODES.INVALID_PARAMS,
       message: expect.stringContaining(message),
@@ -361,6 +475,7 @@ describe("handleRecordToolNote", () => {
           remove: true,
         } as any,
         catalog,
+        registry,
         store,
       ),
     ).rejects.toMatchObject({
@@ -383,6 +498,7 @@ describe("handleRecordToolNote", () => {
           remove,
         } as any,
         catalog,
+        registry,
         store,
       ),
     ).rejects.toMatchObject({
@@ -400,6 +516,7 @@ describe("handleRecordToolNote", () => {
         note: "Keep this note.",
       },
       catalog,
+      registry,
       store,
     );
 
@@ -411,6 +528,7 @@ describe("handleRecordToolNote", () => {
           remove: 1,
         } as any,
         catalog,
+        registry,
         store,
       ),
     ).rejects.toMatchObject({
@@ -443,6 +561,7 @@ describe("handleRecordToolNote", () => {
     const result = await handleRecordToolNote(
       { package_id: "filesystem", tool_id: "read_file", remove: true },
       catalog,
+      registry,
       store,
     );
 
@@ -462,6 +581,7 @@ describe("handleRecordToolNote", () => {
         note: "x".repeat(201),
       },
       catalog,
+      registry,
       store,
     );
     expect(parseResponse(result).status).toBe("rejected");
@@ -478,6 +598,7 @@ describe("handleRecordToolNote", () => {
         note: distinctiveNote,
       },
       catalog,
+      registry,
       store,
     );
 
@@ -546,6 +667,7 @@ describe("server registration contract", () => {
       expect(dispatchRecordToolNote).toHaveBeenCalledOnce();
       expect(dispatchRecordToolNote).toHaveBeenCalledWith(
         args,
+        expect.anything(),
         expect.anything(),
       );
       expect(dispatched).toEqual({
